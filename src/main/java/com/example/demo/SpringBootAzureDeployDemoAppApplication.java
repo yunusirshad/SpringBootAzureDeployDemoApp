@@ -11,7 +11,7 @@ public class SpringBootAzureDeployDemoAppApplication {
 
 	@GetMapping("/message")
 	public String getMessage() {
-		return "Connected - Azure / GitHub / Spring boot";
+		return "Connected - App deployed in Azure / GitHub / Spring boot";
 	}
 	public static void main(String[] args) {
 		SpringApplication.run(SpringBootAzureDeployDemoAppApplication.class, args);
