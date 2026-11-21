@@ -1,0 +1,46 @@
+server:
+  port: ${PORT:8080}
+
+spring:
+  application:
+    name: screener-app
+  jackson:
+    serialization:
+      write-dates-as-timestamps: false
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health
+
+screener:
+  store-dir: ${SCREENER_STORE_DIR:./data}
+  rules:
+    min-price: 1.50
+    max-price: 20.00
+    min-market-cap: 300000000
+    min-upside: 0.25
+    max-debt-equity: 0.5
+    max-debt-assets: 0.3
+    max-debt-capital: 0.3
+    min-cash-debt: 1.0
+    min-revenue-growth: 0.05
+    require-zoya-compliant: true
+  zoya:
+    api-key: ${ZOYA_API_KEY:}
+    url: ${ZOYA_URL:https://api.zoya.finance/graphql}
+    cache-hours: 24
+  account:
+    size: ${ACCOUNT_SIZE:25000}
+    risk-percent: ${RISK_PERCENT:1.0}
+  data:
+    provider: ${SCREENER_PROVIDER:demo}
+    threads: 6
+    max-candidates: 1500
+    gex-expirations: 4
+    pause-millis: 150
+  export:
+    token: ${EXPORT_TOKEN:}
+  schedule:
+    enabled: ${SCREENER_SCHEDULE:false}

@@ -1,0 +1,261 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Halal Ratio Screener</title>
+<style>
+  :root {
+    --bg: #f7f7f5; --panel: #ffffff; --ink: #1d1f21; --muted: #6b6f76; --line: #e3e3df;
+    --pass: #1f7a4d; --fail: #b3261e; --warn: #9a6700; --accent: #2457c5; --chip: #eef1f6;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #121315; --panel: #1b1d20; --ink: #e8e8e6; --muted: #9aa0a6; --line: #2c2f33;
+      --pass: #4cc38a; --fail: #f2766b; --warn: #e0b04a; --accent: #7aa2ff; --chip: #24282e; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.45 system-ui, -apple-system, Segoe UI, sans-serif; }
+  header { padding: 16px; border-bottom: 1px solid var(--line); display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
+  header h1 { font-size: 18px; margin: 0 12px 0 0; }
+  nav button, .btn { border: 1px solid var(--line); background: var(--panel); color: var(--ink); padding: 6px 12px; border-radius: 6px; cursor: pointer; font: inherit; }
+  nav button.on { border-color: var(--accent); color: var(--accent); }
+  .btn.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+  main { padding: 16px; max-width: 1500px; margin: 0 auto; }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 14px; margin-bottom: 14px; }
+  .meta { color: var(--muted); font-size: 13px; }
+  .scroll { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
+  th, td { padding: 6px 8px; border-bottom: 1px solid var(--line); text-align: right; white-space: nowrap; }
+  th { color: var(--muted); font-weight: 600; font-size: 12px; position: sticky; top: 0; background: var(--panel); }
+  td.l, th.l { text-align: left; }
+  .ok { color: var(--pass); } .bad { color: var(--fail); } .warn { color: var(--warn); }
+  .chip { display: inline-block; padding: 1px 7px; border-radius: 10px; background: var(--chip); font-size: 12px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
+  .kv { background: var(--chip); border-radius: 6px; padding: 8px 10px; }
+  .kv b { display: block; font-size: 16px; }
+  .kv span { color: var(--muted); font-size: 12px; }
+  form.row { display: flex; flex-wrap: wrap; gap: 8px; align-items: end; }
+  label { display: flex; flex-direction: column; font-size: 12px; color: var(--muted); gap: 3px; }
+  input, select { font: inherit; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--ink); width: 130px; }
+  ul.rules { margin: 0; padding-left: 18px; columns: 2; }
+  @media (max-width: 640px) { ul.rules { columns: 1; } main { padding: 12px 16px; } }
+  .hidden { display: none; }
+  .err { color: var(--fail); }
+</style>
+</head>
+<body>
+<header>
+  <h1>Halal Ratio Screener</h1>
+  <nav>
+    <button data-tab="screen" class="on">Screen</button>
+    <button data-tab="core">Core stocks</button>
+    <button data-tab="analyze">Analyze</button>
+    <button data-tab="snapshot">Bot snapshot</button>
+    <button data-tab="rules">Rules &amp; exports</button>
+  </nav>
+  <span id="provider" class="meta"></span>
+</header>
+<main>
+  <section id="tab-screen">
+    <div class="panel">
+      <button class="btn primary" id="run">Run screen</button>
+      <label style="display:inline-flex;flex-direction:row;align-items:center;gap:6px;margin-left:10px">
+        <input type="checkbox" id="refreshZoya" style="width:auto"> Force live Zoya reads
+      </label>
+      <label style="display:inline-flex;flex-direction:row;align-items:center;gap:6px;margin-left:10px">
+        <input type="checkbox" id="showRejected" style="width:auto"> Show rejected
+      </label>
+      <div id="screenMeta" class="meta" style="margin-top:8px"></div>
+    </div>
+    <div class="panel scroll"><table id="screenTable"></table></div>
+  </section>
+
+  <section id="tab-core" class="hidden">
+    <div class="panel">
+      <form class="row" id="coreForm">
+        <label>Add symbol<input id="coreSym" placeholder="TICKER"></label>
+        <button class="btn">Add if it passes</button>
+      </form>
+      <div id="coreMeta" class="meta" style="margin-top:8px"></div>
+    </div>
+    <div class="panel scroll"><table id="coreTable"></table></div>
+  </section>
+
+  <section id="tab-analyze" class="hidden">
+    <div class="panel">
+      <form class="row" id="anForm">
+        <label>Symbol<input id="anSym" placeholder="TICKER" required></label>
+        <label>Account $<input id="anAcct" type="number" step="100"></label>
+        <label>Risk %<input id="anRisk" type="number" step="0.1"></label>
+        <label>Side<select id="anSide"><option value="">From bias</option><option>long</option><option>short</option></select></label>
+        <button class="btn primary">Analyze</button>
+      </form>
+    </div>
+    <div id="anOut"></div>
+  </section>
+
+  <section id="tab-snapshot" class="hidden">
+    <div class="panel">
+      <button class="btn" id="snapRebuild">Rebuild today's snapshot</button>
+      <span id="snapMeta" class="meta" style="margin-left:10px"></span>
+    </div>
+    <div class="panel scroll"><table id="snapTable"></table></div>
+  </section>
+
+  <section id="tab-rules" class="hidden">
+    <div class="panel"><h3 style="margin-top:0">Rules</h3><ul class="rules" id="rulesList"></ul>
+      <p class="meta">Quality is shown on every row and never removes a name. A good Zoya read is kept for 24 hours; a failed read does not replace it.</p></div>
+    <div class="panel"><h3 style="margin-top:0">Public exports</h3>
+      <ul>
+        <li><a href="/public/export/screen">/public/export/screen</a> · <a href="/public/export/screen?format=csv&include=core">CSV with core</a></li>
+        <li><a href="/public/export/snapshot">/public/export/snapshot</a> · <a href="/public/export/snapshot?format=csv">CSV</a></li>
+        <li>/public/export/bars/<i>SYMBOL</i>?days=5 — 15-minute bars with premarket and after-hours (<code>format=csv</code> for CSV)</li>
+      </ul>
+    </div>
+  </section>
+</main>
+<script>
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const money = v => v == null ? '—' : '$' + Number(v).toFixed(2);
+const pct = v => v == null ? '—' : (v * 100).toFixed(1) + '%';
+const num = (v, d = 2) => v == null ? '—' : Number(v).toFixed(d);
+const big = v => v == null ? '—' : v >= 1e9 ? '$' + (v / 1e9).toFixed(2) + 'B' : '$' + (v / 1e6).toFixed(0) + 'M';
+async function api(url, opts) {
+  const r = await fetch(url, opts);
+  const body = await r.json().catch(() => ({}));
+  if (!r.ok && r.status !== 422) throw new Error(body.error || body.message || r.statusText);
+  return body;
+}
+document.querySelectorAll('nav button').forEach(b => b.onclick = () => {
+  document.querySelectorAll('nav button').forEach(x => x.classList.toggle('on', x === b));
+  document.querySelectorAll('main > section').forEach(s => s.classList.toggle('hidden', s.id !== 'tab-' + b.dataset.tab));
+  ({ screen: loadScreen, core: loadCore, snapshot: loadSnap, rules: loadRules })[b.dataset.tab]?.();
+});
+
+function zoyaCell(z) {
+  if (!z) return '—';
+  const cls = z.status === 'COMPLIANT' && (z.source === 'LIVE' || z.source === 'CACHE') ? 'ok' : z.status === 'UNKNOWN' || z.source === 'STALE' ? 'warn' : 'bad';
+  const when = z.checkedAt ? new Date(z.checkedAt).toLocaleString() : 'never';
+  return `<span class="${cls}" title="${esc(z.source)} · ${esc(when)}${z.error ? ' · ' + esc(z.error) : ''}">${esc(z.status)}${z.source === 'STALE' ? ' (stale)' : ''}</span>`;
+}
+function gateCls(row, name) {
+  const g = (row.gates || []).find(x => x.gate === name);
+  return g ? (g.pass ? 'ok' : 'bad') : '';
+}
+const HEAD = `<tr><th class="l">Symbol</th><th class="l">Exch</th><th>Price</th><th>Mkt cap</th><th>Target</th><th>Upside</th>
+  <th>D/E</th><th>D/A</th><th>D/C</th><th>Cash/Debt</th><th>Rev gr.</th><th>Earnings</th><th class="l">Zoya</th><th>Quality</th>
+  <th>Call wall</th><th>King</th><th>Put wall</th><th class="l"></th></tr>`;
+function rowHtml(r, extra = '') {
+  const q = r.quality ? `<span class="chip" title="${esc((r.quality.notes || []).join('; '))}">${r.quality.grade} · ${r.quality.score}</span>` : '—';
+  const g = r.gex || {};
+  const why = r.passed ? '' : `<div class="meta bad" style="text-align:left;white-space:normal">${esc((r.failedReasons || []).join('; '))}</div>`;
+  return `<tr><td class="l"><b>${esc(r.symbol)}</b><div class="meta">${esc(r.name)}</div>${why}</td><td class="l">${esc(r.exchange)}</td>
+    <td class="${gateCls(r, 'Price')}">${money(r.price)}</td><td class="${gateCls(r, 'Market cap')}">${big(r.marketCap)}</td>
+    <td>${money(r.targetMeanPrice)}</td><td class="${gateCls(r, 'Target upside')}">${pct(r.upside)}</td>
+    <td class="${gateCls(r, 'Debt/equity')}">${num(r.debtToEquity)}</td><td class="${gateCls(r, 'Debt/assets')}">${num(r.debtToAssets)}</td>
+    <td class="${gateCls(r, 'Debt/capital')}">${num(r.debtToCapital)}</td>
+    <td class="${gateCls(r, 'Cash/debt')}">${r.cashToDebt == null && r.gates?.find(x => x.gate === 'Cash/debt')?.pass ? 'no debt' : num(r.cashToDebt)}</td>
+    <td class="${gateCls(r, 'Revenue growth')}">${pct(r.revenueGrowth)}</td><td>${esc(r.earningsDate || '—')}</td>
+    <td class="l">${zoyaCell(r.zoya)}</td><td>${q}</td>
+    <td>${money(g.callWall)}</td><td><b>${money(g.king)}</b></td><td>${money(g.putWall)}</td>
+    <td class="l"><button class="btn" onclick="goAnalyze('${esc(r.symbol)}')">Analyze</button>${extra}</td></tr>`;
+}
+
+async function loadScreen() {
+  const all = $('#showRejected').checked;
+  const d = await api('/api/screen?all=' + all);
+  const r = d.result;
+  $('#screenMeta').innerHTML = d.running ? 'Screen running…' :
+    r.runAt ? `Last run ${new Date(r.runAt).toLocaleString()} (${esc(r.provider)}) · universe ${r.universeCount} · in band ${r.bandCount}
+      · checked ${r.evaluatedCount} · ratios pass ${r.ratioPassCount} · Zoya compliant ${r.zoyaCompliantCount} · <b>${r.rows.length} on the list</b>
+      ${d.lastRunError ? `<div class="err">${esc(d.lastRunError)}</div>` : ''}
+      ${r.warnings?.length ? `<details><summary>${r.warnings.length} warnings</summary>${r.warnings.map(esc).join('<br>')}</details>` : ''}`
+    : 'No screen yet. Press Run screen.';
+  const rows = r.rows.concat(all ? r.rejected : []);
+  $('#screenTable').innerHTML = HEAD + rows.map(x => rowHtml(x)).join('');
+  if (d.running) setTimeout(loadScreen, 3000);
+}
+$('#run').onclick = async () => {
+  try { await api('/api/screen/run?refreshZoya=' + $('#refreshZoya').checked, { method: 'POST' }); } catch (e) { alert(e.message); }
+  setTimeout(loadScreen, 400);
+};
+$('#showRejected').onchange = loadScreen;
+
+async function loadCore() {
+  const d = await api('/api/core');
+  $('#coreMeta').textContent = `New York day ${d.nyDate} · ${d.rows.length} core names (fresh Zoya COMPLIANT only)`;
+  $('#coreTable').innerHTML = HEAD + d.rows.map(r => rowHtml(r, ` <button class="btn" onclick="rmCore('${esc(r.symbol)}')">Remove</button>`)).join('');
+}
+async function rmCore(s) { await api('/api/core/' + encodeURIComponent(s), { method: 'DELETE' }); loadCore(); }
+$('#coreForm').onsubmit = async e => {
+  e.preventDefault();
+  try {
+    const d = await api('/api/core/' + encodeURIComponent($('#coreSym').value), { method: 'POST' });
+    if (!d.added) alert(d.message || 'Not added');
+    loadCore();
+  } catch (err) { alert(err.message); }
+};
+
+function goAnalyze(s) { $('#anSym').value = s; document.querySelector('nav button[data-tab=analyze]').click(); $('#anForm').requestSubmit(); }
+$('#anForm').onsubmit = async e => {
+  e.preventDefault();
+  const p = new URLSearchParams();
+  if ($('#anAcct').value) p.set('account', $('#anAcct').value);
+  if ($('#anRisk').value) p.set('riskPercent', $('#anRisk').value);
+  if ($('#anSide').value) p.set('side', $('#anSide').value);
+  $('#anOut').innerHTML = '<div class="panel meta">Loading…</div>';
+  try {
+    const d = await api('/api/analyze/' + encodeURIComponent($('#anSym').value) + '?' + p);
+    const x = d.plan, g = d.gex || {};
+    const kv = (k, v) => `<div class="kv"><span>${k}</span><b>${v}</b></div>`;
+    const sideCls = x.side === 'LONG' ? 'ok' : x.side === 'SHORT' ? 'bad' : 'warn';
+    $('#anOut').innerHTML = `<div class="panel"><h3 style="margin-top:0">${esc(x.symbol)} · <span class="${sideCls}">${esc(x.side)}</span>
+        <span class="chip">${esc(x.bias)}</span> <span class="chip">${esc(x.state)}</span></h3>
+      <div class="grid">${kv('Price', money(x.price))}${kv('Entry', money(x.entry))}${kv('Stop', money(x.stop))}
+        ${kv('Target 1', money(x.target1))}${kv('Target 2 (2R)', money(x.target2))}${kv('Risk / share', money(x.riskPerShare))}
+        ${kv('Shares', x.shares)}${kv('Risk $', money(x.riskDollars))}${kv('Position $', money(x.positionValue))}</div></div>
+      <div class="panel"><h3 style="margin-top:0">Daily levels (${esc(x.levelsDate)})</h3>
+      <div class="grid">${kv('Prior high', money(x.priorHigh))}${kv('Prior low', money(x.priorLow))}${kv('Prior close', money(x.priorClose))}
+        ${kv('Pivot', money(x.pivot))}${kv('R1', money(x.r1))}${kv('S1', money(x.s1))}${kv('ATR 14', money(x.atr14))}${kv('20-day avg', money(x.sma20))}</div>
+      <ul class="meta">${x.notes.map(n => `<li>${esc(n)}</li>`).join('')}</ul></div>
+      <div class="panel"><h3 style="margin-top:0">GEX</h3>${g.error ? `<p class="warn">${esc(g.error)}</p>` : ''}
+      <div class="grid">${kv('Call wall', money(g.callWall))}${kv('King', money(g.king))}${kv('Put wall', money(g.putWall))}
+        ${kv('Net GEX', g.netGex == null ? '—' : '$' + (g.netGex / 1e6).toFixed(2) + 'M / 1%')}</div>
+      <p class="meta">Expiries: ${esc((g.expirations || []).join(', '))}</p></div>
+      <div class="panel scroll"><table>${HEAD}${rowHtml(d.row)}</table></div>`;
+  } catch (err) { $('#anOut').innerHTML = `<div class="panel err">${esc(err.message)}</div>`; }
+};
+
+async function loadSnap(rebuild) {
+  const d = await api('/api/snapshot', rebuild ? { method: 'POST' } : undefined);
+  $('#snapMeta').textContent = `${d.nyDate} · built ${new Date(d.generatedAt).toLocaleString()} · ${d.entries.length} names`;
+  $('#snapTable').innerHTML = `<tr><th class="l">Symbol</th><th class="l">Core</th><th class="l">Side</th><th class="l">Bias</th><th class="l">State</th>
+    <th class="l">Zoya</th><th>Quality</th><th>Price</th><th>Entry</th><th>Stop</th><th>Target 1</th><th>Shares</th><th>Earnings</th></tr>` +
+    d.entries.map(e => `<tr><td class="l"><b>${esc(e.symbol)}</b>${e.error ? `<div class="meta bad">${esc(e.error)}</div>` : ''}</td>
+      <td class="l">${e.core ? 'yes' : ''}</td><td class="l">${esc(e.side)}</td><td class="l">${esc(e.bias)}</td><td class="l">${esc(e.state)}</td>
+      <td class="l">${esc(e.zoya)}</td><td>${e.qualityGrade ? esc(e.qualityGrade) + ' · ' + e.qualityScore : '—'}</td>
+      <td>${money(e.price)}</td><td>${money(e.entry)}</td><td>${money(e.stop)}</td><td>${money(e.target1)}</td><td>${e.shares ?? '—'}</td>
+      <td>${esc(e.earningsDate || '—')}</td></tr>`).join('');
+}
+$('#snapRebuild').onclick = () => loadSnap(true);
+
+async function loadRules() {
+  const d = await api('/api/rules');
+  const r = d.rules;
+  $('#rulesList').innerHTML = [
+    `Price $${r.minPrice.toFixed(2)}–$${r.maxPrice}`, `Market cap over $${r.minMarketCap / 1e6}M`,
+    `Target upside over ${r.minUpside * 100}%`, `Debt/equity under ${r.maxDebtEquity}`, `Debt/assets under ${r.maxDebtAssets}`,
+    `Debt/capital under ${r.maxDebtCapital}`, `Cash/debt over ${r.minCashDebt}`, `Revenue growth over ${r.minRevenueGrowth * 100}%`,
+    `Zoya compliant for the screen list${r.requireZoyaCompliant ? '' : ' (off)'}`, `Quality is shown and does not remove a name`
+  ].map(x => `<li>${esc(x)}</li>`).join('');
+}
+
+api('/api/rules').then(d => {
+  $('#provider').textContent = `Data: ${d.provider}${d.provider === 'demo' ? ' (sample tickers, not market data)' : ''} · Zoya key ${d.zoyaKeySet ? 'set' : 'not set'}`;
+  $('#anAcct').placeholder = d.account.size; $('#anRisk').placeholder = d.account.riskPercent;
+});
+loadScreen();
+</script>
+</body>
+</html>
