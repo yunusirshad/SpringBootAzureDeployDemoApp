@@ -59,3 +59,19 @@ Open http://localhost:8080.
 `POST /api/screen/run[?wait=true&refreshZoya=true]` · `GET /api/screen[?all=true]` · `GET /api/row/{sym}` · `GET /api/analyze/{sym}?account=&riskPercent=&side=long|short` · `GET /api/gex/{sym}` · `GET /api/zoya/{sym}` · `GET|POST|DELETE /api/core[/{sym}]` · `GET|POST /api/snapshot`
 
 Yahoo Finance's endpoints are free and unofficial. They can lag or rate-limit you. This app is a screen, not investment advice.
+
+## Open it in a browser (Azure)
+
+Pushes to `main` or `claude/screener-app-rules-tz3n49` build the app and deploy it to Azure App Service with `.github/workflows/azure-webapp.yml`.
+
+1. In the Azure portal, **Create a resource → Web App**: Publish **Code**, Runtime **Java 21**, Java web server **Java SE (Embedded Web Server)**, OS **Linux**. The Free F1 plan works for trying it out.
+2. Open the web app's **Settings → Environment variables** and add:
+   `APP_PASSWORD` (your sign-in password), `ZOYA_API_KEY`, `ZOYA_URL` (sandbox only), `SCREENER_PROVIDER=yahoo`, `SCREENER_STORE_DIR=/home/data`. Save.
+3. On the web app's **Overview**, choose **Download publish profile**. (If it is greyed out: **Configuration → General settings → SCM Basic Auth Publishing → On**.)
+4. In GitHub, open **Settings → Secrets and variables → Actions**:
+   - **Secrets** tab: add `AZURE_WEBAPP_PUBLISH_PROFILE` and paste the whole file.
+   - **Variables** tab: add `AZURE_WEBAPP_NAME` with the web app's name.
+5. In **Actions → Deploy to Azure Web App**, click **Run workflow**, or re-run the latest run.
+6. Open `https://<app-name>.azurewebsites.net`. Sign in with any user name and your `APP_PASSWORD`.
+
+Set `APP_PASSWORD` whenever the app is public, because without it anyone with the link can run screens on your Zoya key. `/public/export/**` doesn't use the password; it's protected by `EXPORT_TOKEN` instead.

@@ -1,0 +1,45 @@
+name: Deploy to Azure Web App
+
+on:
+  push:
+    branches: [main, claude/screener-app-rules-tz3n49]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      - name: Build and test
+        run: mvn -B package
+
+      - name: Check Azure settings
+        id: azure
+        env:
+          PROFILE: ${{ secrets.AZURE_WEBAPP_PUBLISH_PROFILE }}
+          APP: ${{ vars.AZURE_WEBAPP_NAME }}
+        run: |
+          if [ -z "$PROFILE" ] || [ -z "$APP" ]; then
+            echo "Set the AZURE_WEBAPP_PUBLISH_PROFILE secret and the AZURE_WEBAPP_NAME variable to deploy. Build only."
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Deploy
+        if: steps.azure.outputs.ready == 'true'
+        uses: azure/webapps-deploy@v3
+        with:
+          app-name: ${{ vars.AZURE_WEBAPP_NAME }}
+          publish-profile: ${{ secrets.AZURE_WEBAPP_PUBLISH_PROFILE }}
+          package: target/screener-app.jar
