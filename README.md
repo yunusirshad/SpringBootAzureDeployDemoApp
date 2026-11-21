@@ -60,6 +60,10 @@ Open http://localhost:8080.
 
 Yahoo Finance's endpoints are free and unofficial. They can lag or rate-limit you. This app is a screen, not investment advice.
 
+## Open it in a browser (Render, one click)
+
+[Deploy to Render](https://render.com/deploy?repo=https://github.com/yunusirshad/SpringBootAzureDeployDemoApp/tree/claude/screener-app-rules-tz3n49): sign in with GitHub, enter `APP_PASSWORD` and `ZOYA_API_KEY` when asked, then click **Apply**. Render builds the `Dockerfile` using `render.yaml` and gives you `https://halal-screener-xxxx.onrender.com`. On the free plan the app sleeps after 15 idle minutes, the first visit afterwards takes about a minute, and the Zoya cache resets on each restart.
+
 ## Open it in a browser (Azure)
 
 Pushes to `main` or `claude/screener-app-rules-tz3n49` build the app and deploy it to Azure App Service with `.github/workflows/azure-webapp.yml`.

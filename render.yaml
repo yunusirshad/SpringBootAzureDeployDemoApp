@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: halal-screener
+    runtime: docker
+    plan: free
+    branch: claude/screener-app-rules-tz3n49
+    healthCheckPath: /actuator/health
+    autoDeploy: true
+    envVars:
+      - key: APP_PASSWORD
+        sync: false
+      - key: ZOYA_API_KEY
+        sync: false
+      - key: ZOYA_URL
+        value: https://sandbox-api.zoya.finance/graphql
+      - key: SCREENER_PROVIDER
+        value: yahoo
+      - key: SCREENER_STORE_DIR
+        value: /app/data
