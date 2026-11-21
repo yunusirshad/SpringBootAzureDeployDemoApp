@@ -30,9 +30,9 @@ public final class Csv {
     }
 
     public static String snapshot(List<SnapshotEntry> entries) {
-        StringBuilder sb = new StringBuilder("symbol,core,side,bias,state,zoya,quality_score,quality_grade,price,entry,stop,target1,shares,earnings_date,error\n");
+        StringBuilder sb = new StringBuilder("symbol,core,mine,side,bias,state,zoya,quality_score,quality_grade,price,entry,stop,target1,shares,earnings_date,error\n");
         for (SnapshotEntry e : entries) {
-            line(sb, e.symbol(), e.core(), e.side(), e.bias(), e.state(), e.zoya(), e.qualityScore(), e.qualityGrade(),
+            line(sb, e.symbol(), e.core(), e.mine(), e.side(), e.bias(), e.state(), e.zoya(), e.qualityScore(), e.qualityGrade(),
                     e.price(), e.entry(), e.stop(), e.target1(), e.shares(), e.earningsDate(), e.error());
         }
         return sb.toString();

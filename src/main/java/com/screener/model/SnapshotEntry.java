@@ -6,6 +6,7 @@ import java.time.LocalDate;
 public record SnapshotEntry(
         String symbol,
         boolean core,
+        boolean mine,
         String side,
         String bias,
         String state,

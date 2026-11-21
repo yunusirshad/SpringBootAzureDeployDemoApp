@@ -141,21 +141,18 @@ public class ApiController {
         return zoya.check(sym(symbol), refresh);
     }
 
+    /** rows = your names, then the screen's compliant names for today. mine = the symbols you added. */
     @GetMapping("/core")
     public Map<String, Object> core() {
-        return Map.of("nyDate", core.day(), "rows", core.list());
+        return Map.of("nyDate", core.day(), "rows", core.list(), "mine", core.mineSymbols());
     }
 
-    /** Adds a name to today's core if its full row passes the screen with a fresh compliant Zoya read. */
+    /** Adds one of your own core names. Any name with data is added, compliant or not. */
     @PostMapping("/core/{symbol}")
-    public ResponseEntity<Map<String, Object>> addCore(@PathVariable String symbol) {
-        ScreenRow row = screener.evaluate(sym(symbol), false, true);
-        if (!row.passed()) {
-            return ResponseEntity.unprocessableEntity().body(Map.of("added", false, "row", row,
-                    "message", "Not added: " + String.join("; ", row.failedReasons())));
-        }
-        boolean added = !core.merge(List.of(row)).isEmpty();
-        return ResponseEntity.ok(Map.of("added", added, "row", row));
+    public Map<String, Object> addCore(@PathVariable String symbol) {
+        ScreenRow row = screener.evaluateMine(sym(symbol));
+        core.putMine(row);
+        return Map.of("added", true, "mine", true, "row", row);
     }
 
     @DeleteMapping("/core/{symbol}")

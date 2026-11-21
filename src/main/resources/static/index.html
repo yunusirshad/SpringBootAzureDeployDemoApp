@@ -73,8 +73,8 @@
   <section id="tab-core" class="hidden">
     <div class="panel">
       <form class="row" id="coreForm">
-        <label>Add symbol<input id="coreSym" placeholder="TICKER"></label>
-        <button class="btn">Add if it passes</button>
+        <label>Add your own name<input id="coreSym" placeholder="TICKER"></label>
+        <button class="btn">Add to my core</button>
       </form>
       <div id="coreMeta" class="meta" style="margin-top:8px"></div>
     </div>
@@ -146,11 +146,11 @@ function gateCls(row, name) {
 const HEAD = `<tr><th class="l">Symbol</th><th class="l">Exch</th><th>Price</th><th>Mkt cap</th><th>Target</th><th>Upside</th>
   <th>D/E</th><th>D/A</th><th>D/C</th><th>Cash/Debt</th><th>Rev gr.</th><th>Earnings</th><th class="l">Zoya</th><th>Quality</th>
   <th>Call wall</th><th>King</th><th>Put wall</th><th class="l"></th></tr>`;
-function rowHtml(r, extra = '') {
+function rowHtml(r, extra = '', tag = '') {
   const q = r.quality ? `<span class="chip" title="${esc((r.quality.notes || []).join('; '))}">${r.quality.grade} · ${r.quality.score}</span>` : '—';
   const g = r.gex || {};
   const why = r.passed ? '' : `<div class="meta bad" style="text-align:left;white-space:normal">${esc((r.failedReasons || []).join('; '))}</div>`;
-  return `<tr><td class="l"><b>${esc(r.symbol)}</b><div class="meta">${esc(r.name)}</div>${why}</td><td class="l">${esc(r.exchange)}</td>
+  return `<tr><td class="l"><b>${esc(r.symbol)}</b> ${tag}<div class="meta">${esc(r.name)}</div>${why}</td><td class="l">${esc(r.exchange)}</td>
     <td class="${gateCls(r, 'Price')}">${money(r.price)}</td><td class="${gateCls(r, 'Market cap')}">${big(r.marketCap)}</td>
     <td>${money(r.targetMeanPrice)}</td><td class="${gateCls(r, 'Target upside')}">${pct(r.upside)}</td>
     <td class="${gateCls(r, 'Debt/equity')}">${num(r.debtToEquity)}</td><td class="${gateCls(r, 'Debt/assets')}">${num(r.debtToAssets)}</td>
@@ -184,15 +184,19 @@ $('#showRejected').onchange = loadScreen;
 
 async function loadCore() {
   const d = await api('/api/core');
-  $('#coreMeta').textContent = `New York day ${d.nyDate} · ${d.rows.length} core names (fresh Zoya COMPLIANT only)`;
-  $('#coreTable').innerHTML = HEAD + d.rows.map(r => rowHtml(r, ` <button class="btn" onclick="rmCore('${esc(r.symbol)}')">Remove</button>`)).join('');
+  const mine = new Set(d.mine);
+  const auto = d.rows.length - d.rows.filter(r => mine.has(r.symbol)).length;
+  $('#coreMeta').textContent = `New York day ${d.nyDate} · ${mine.size} yours (kept until you remove them, any Zoya status) · ${auto} from the screen (fresh Zoya COMPLIANT, today only)`;
+  $('#coreTable').innerHTML = HEAD + d.rows.map(r => rowHtml(r,
+    ` <button class="btn" onclick="rmCore('${esc(r.symbol)}')">Remove</button>`,
+    `<span class="chip">${mine.has(r.symbol) ? 'Mine' : 'Screen'}</span>`)).join('');
 }
 async function rmCore(s) { await api('/api/core/' + encodeURIComponent(s), { method: 'DELETE' }); loadCore(); }
 $('#coreForm').onsubmit = async e => {
   e.preventDefault();
   try {
-    const d = await api('/api/core/' + encodeURIComponent($('#coreSym').value), { method: 'POST' });
-    if (!d.added) alert(d.message || 'Not added');
+    await api('/api/core/' + encodeURIComponent($('#coreSym').value), { method: 'POST' });
+    $('#coreSym').value = '';
     loadCore();
   } catch (err) { alert(err.message); }
 };
@@ -230,10 +234,10 @@ $('#anForm').onsubmit = async e => {
 async function loadSnap(rebuild) {
   const d = await api('/api/snapshot', rebuild ? { method: 'POST' } : undefined);
   $('#snapMeta').textContent = `${d.nyDate} · built ${new Date(d.generatedAt).toLocaleString()} · ${d.entries.length} names`;
-  $('#snapTable').innerHTML = `<tr><th class="l">Symbol</th><th class="l">Core</th><th class="l">Side</th><th class="l">Bias</th><th class="l">State</th>
+  $('#snapTable').innerHTML = `<tr><th class="l">Symbol</th><th class="l">Core</th><th class="l">Mine</th><th class="l">Side</th><th class="l">Bias</th><th class="l">State</th>
     <th class="l">Zoya</th><th>Quality</th><th>Price</th><th>Entry</th><th>Stop</th><th>Target 1</th><th>Shares</th><th>Earnings</th></tr>` +
     d.entries.map(e => `<tr><td class="l"><b>${esc(e.symbol)}</b>${e.error ? `<div class="meta bad">${esc(e.error)}</div>` : ''}</td>
-      <td class="l">${e.core ? 'yes' : ''}</td><td class="l">${esc(e.side)}</td><td class="l">${esc(e.bias)}</td><td class="l">${esc(e.state)}</td>
+      <td class="l">${e.core ? 'yes' : ''}</td><td class="l">${e.mine ? 'yes' : ''}</td><td class="l">${esc(e.side)}</td><td class="l">${esc(e.bias)}</td><td class="l">${esc(e.state)}</td>
       <td class="l">${esc(e.zoya)}</td><td>${e.qualityGrade ? esc(e.qualityGrade) + ' · ' + e.qualityScore : '—'}</td>
       <td>${money(e.price)}</td><td>${money(e.entry)}</td><td>${money(e.stop)}</td><td>${money(e.target1)}</td><td>${e.shares ?? '—'}</td>
       <td>${esc(e.earningsDate || '—')}</td></tr>`).join('');

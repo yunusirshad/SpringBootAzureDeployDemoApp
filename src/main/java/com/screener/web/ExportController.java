@@ -50,7 +50,7 @@ public class ExportController {
         this.market = market;
     }
 
-    /** The screen list. include=core adds today's core rows (same row shape). */
+    /** The screen list. include=core adds the core rows (yours and the screen's, same row shape) and your symbols. */
     @GetMapping("/screen")
     public ResponseEntity<?> screen(@RequestParam(defaultValue = "json") String format,
                                     @RequestParam(required = false) String include,
@@ -69,7 +69,10 @@ public class ExportController {
         m.put("nyDate", r.nyDate());
         m.put("provider", r.provider());
         m.put("rows", r.rows());
-        if (!coreRows.isEmpty() || "core".equalsIgnoreCase(include)) m.put("core", coreRows);
+        if ("core".equalsIgnoreCase(include)) {
+            m.put("core", coreRows);
+            m.put("mine", core.mineSymbols());
+        }
         return ResponseEntity.ok(m);
     }
 

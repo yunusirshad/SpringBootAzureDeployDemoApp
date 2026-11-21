@@ -25,7 +25,9 @@ A missing number fails its gate. Every threshold can be changed under `screener.
 - **Zoya cache**: a good read is kept for 24 hours. A failed read never replaces a good one. A read older than 24 hours is shown as `STALE` and doesn't count as compliant.
 - **Analyze**: gives a long or short plan from the prior day's high, low, close, floor pivot, R1/S1, ATR(14) and 20-day average. Shares are sized from the account and the stop: `floor(account × risk% ÷ |entry − stop|)`, capped by the account size.
 - **GEX**: call wall, king and put wall, worked out from the nearest 4 option expiries (Black–Scholes gamma × open interest).
-- **Core stocks**: compliant names with a fresh Zoya read are kept for the New York day, using the same full screener row. The list resets when the New York date changes.
+- **Core stocks** (same full screener row), two kinds:
+  - *Screen core*: names that make the list with a fresh compliant Zoya read are kept for the New York day. The list resets when the New York date changes.
+  - *My core*: names you add yourself (`POST /api/core/{sym}`) and remove (`DELETE /api/core/{sym}`). No gate or Zoya rule applies, so they can be non-compliant. They stay across days until you remove them, and each screen refreshes their rows. They appear in the snapshot with `mine=true`.
 - **Daily snapshot**: side, bias, state, Zoya and quality for each screen-list and core name, saved as one file per New York day for a bot.
 - **Public exports** (JSON, or CSV with `format=csv`):
   - `GET /public/export/screen` (`include=core` adds the core rows)

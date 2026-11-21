@@ -82,6 +82,7 @@ public class ScreenerService {
             store.write(FILE, latest);
             core.merge(latest.rows());
             latest.rejected().forEach(core::refreshIfPresent);
+            refreshMine();
             return latest;
         } finally {
             running.set(false);
@@ -152,12 +153,32 @@ public class ScreenerService {
         }
     }
 
+    /** Re-reads the full row (Zoya always read, GEX included) for each of your own core names. */
+    private void refreshMine() {
+        for (String s : core.mineSymbols()) {
+            try {
+                core.refreshMine(evaluateMine(s));
+            } catch (Exception e) {
+                log.debug("My core name {} not refreshed: {}", s, e.getMessage());
+            }
+        }
+    }
+
+    /** The full row for one of your own core names: same gates, Zoya always read so its status shows. */
+    public ScreenRow evaluateMine(String symbol) {
+        return evaluate(symbol, false, true, true);
+    }
+
     /** One name through every gate, as the screen does it. Zoya is read only when the ratios pass, unless forced. */
     public ScreenRow evaluate(String symbol, boolean refreshZoya, boolean withGex) {
+        return evaluate(symbol, refreshZoya, withGex, false);
+    }
+
+    private ScreenRow evaluate(String symbol, boolean refreshZoya, boolean withGex, boolean alwaysZoya) {
         Fundamentals f = market.fundamentals(symbol);
         List<GateResult> gates = rules.evaluate(f);
         boolean ratiosPass = gates.stream().allMatch(GateResult::pass);
-        ZoyaCheck z = ratiosPass || refreshZoya ? zoya.check(symbol, refreshZoya)
+        ZoyaCheck z = ratiosPass || refreshZoya || alwaysZoya ? zoya.check(symbol, refreshZoya)
                 : new ZoyaCheck(symbol, "UNKNOWN", null, "NONE", "not checked: failed a ratio gate");
         ScreenRow row = buildRow(f, gates, ratiosPass, z, quality.score(f), null);
         return withGex ? withGex(row) : row;

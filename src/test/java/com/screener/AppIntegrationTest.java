@@ -67,9 +67,31 @@ class AppIntegrationTest {
         mvc.perform(get("/api/core")).andExpect(status().isOk())
                 .andExpect(jsonPath("$.rows[*].symbol", hasItem("DEMA")))
                 .andExpect(jsonPath("$.rows[0].gates").isArray());
-        mvc.perform(post("/api/core/DEMC")).andExpect(status().isUnprocessableEntity());
         mvc.perform(delete("/api/core/DEMB")).andExpect(jsonPath("$.removed", is(true)));
-        mvc.perform(post("/api/core/DEMB")).andExpect(jsonPath("$.added", is(true)));
+        mvc.perform(get("/api/core")).andExpect(jsonPath("$.rows[*].symbol", not(hasItem("DEMB"))));
+    }
+
+    @Test @Order(2)
+    void myCoreNamesCanBeNonCompliant() throws Exception {
+        // DEMC is NON_COMPLIANT and DEMF fails the debt gates: both can be your own core names.
+        mvc.perform(post("/api/core/DEMC")).andExpect(status().isOk())
+                .andExpect(jsonPath("$.added", is(true)))
+                .andExpect(jsonPath("$.row.zoya.status", is("NON_COMPLIANT")));
+        mvc.perform(post("/api/core/DEMF")).andExpect(status().isOk())
+                .andExpect(jsonPath("$.row.zoya.status", is("COMPLIANT")))
+                .andExpect(jsonPath("$.row.passed", is(false)));
+        mvc.perform(get("/api/core"))
+                .andExpect(jsonPath("$.mine", hasItem("DEMC")))
+                .andExpect(jsonPath("$.mine", hasItem("DEMF")))
+                .andExpect(jsonPath("$.rows[*].symbol", hasItem("DEMC")));
+        // A new screen keeps them.
+        mvc.perform(post("/api/screen/run?wait=true")).andExpect(status().isOk());
+        mvc.perform(get("/api/core")).andExpect(jsonPath("$.rows[*].symbol", hasItem("DEMC")));
+        mvc.perform(get("/public/export/snapshot?format=csv"))
+                .andExpect(content().string(containsString("DEMC,true,true,")));
+        // Remove one of yours.
+        mvc.perform(delete("/api/core/DEMF")).andExpect(jsonPath("$.removed", is(true)));
+        mvc.perform(get("/api/core")).andExpect(jsonPath("$.mine", not(hasItem("DEMF"))));
     }
 
     @Test @Order(3)

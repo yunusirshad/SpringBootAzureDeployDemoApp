@@ -18,7 +18,8 @@ import com.screener.model.TradePlan;
 
 /**
  * The daily snapshot for the bot: side, bias, state, Zoya and quality for every name on the screen list
- * and in the core, one file per New York day (snapshot-YYYY-MM-DD.json).
+ * and in the core, one file per New York day (snapshot-YYYY-MM-DD.json). Your own core names are included
+ * whatever their Zoya status, with mine=true, so the bot can tell them apart.
  */
 @Service
 public class SnapshotService {
@@ -47,15 +48,16 @@ public class SnapshotService {
         List<SnapshotEntry> entries = new ArrayList<>();
         for (ScreenRow r : rows.values()) {
             boolean isCore = coreRows.stream().anyMatch(c -> c.symbol().equals(r.symbol()));
+            boolean mine = core.isMine(r.symbol());
             Integer qs = r.quality() == null ? null : r.quality().score();
             String qg = r.quality() == null ? null : r.quality().grade();
             String z = r.zoya() == null ? "UNKNOWN" : r.zoya().status();
             try {
                 TradePlan p = plans.analyze(r.symbol(), null, null, null);
-                entries.add(new SnapshotEntry(r.symbol(), isCore, p.side(), p.bias(), p.state(), z, qs, qg, p.price(),
+                entries.add(new SnapshotEntry(r.symbol(), isCore, mine, p.side(), p.bias(), p.state(), z, qs, qg, p.price(),
                         p.entry(), p.stop(), p.target1(), p.shares(), r.earningsDate(), null));
             } catch (Exception e) {
-                entries.add(new SnapshotEntry(r.symbol(), isCore, "NONE", "UNKNOWN", "ERROR", z, qs, qg, r.price(),
+                entries.add(new SnapshotEntry(r.symbol(), isCore, mine, "NONE", "UNKNOWN", "ERROR", z, qs, qg, r.price(),
                         null, null, null, 0, r.earningsDate(), e.getMessage()));
             }
         }
