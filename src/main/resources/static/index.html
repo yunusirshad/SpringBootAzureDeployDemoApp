@@ -17,6 +17,7 @@
     <button role="tab" data-tab="alerts">Alerts <span id="alertBadge" class="badge hidden"></span></button>
     <button role="tab" data-tab="analyze">Analyze</button>
     <button role="tab" data-tab="technicals">Technicals</button>
+    <button role="tab" data-tab="backtest">Backtest</button>
     <button role="tab" data-tab="details">APP Details</button>
   </nav>
 </header>
@@ -139,6 +140,25 @@
     <p class="sub">Completed candles only. 4-hour candles are built from 1-hour candles inside each session.</p>
     <form id="techForm" class="addrow"><input id="techInput" placeholder="Ticker" required autocomplete="off"><button>Load</button></form>
     <div id="techOut"></div>
+  </div>
+</section>
+
+<!-- ============================== BACKTEST ============================== -->
+<section id="tab-backtest" class="tab">
+  <div class="card">
+    <div class="card-head"><h2>Quantum Shift backtest</h2></div>
+    <p class="sub">Quantum Shift scores the jump from a coiled, quiet tape to a new trend: coil (30), break past the 20 EMA in ATRs (30), momentum z-score (25) and volume (15). A shift fires when energy clears the threshold and the close is outside the 20 EMA ± 1 ATR. Trades enter at the next bar's open, stop 2 ATR, trail 2.5 ATR off the best close, and exit on an opposite shift or after the bar limit. Costs are charged on both sides.</p>
+    <form id="btForm" class="alertform">
+      <input name="tickers" placeholder="Tickers (blank = every name in the app)" style="min-width:280px" autocomplete="off">
+      <label class="hint">Days <input name="days" type="number" value="60" min="5" max="365" style="width:70px"></label>
+      <select name="interval"><option value="60m" selected>1-hour bars</option><option value="15m">15-min bars</option><option value="1d">Daily bars</option></select>
+      <label class="hint">Energy ≥ <input name="threshold" type="number" value="60" min="0" max="100" style="width:64px"></label>
+      <label class="hint">Max bars <input name="maxBars" type="number" value="35" min="1" style="width:64px"></label>
+      <label class="hint">Cost bps <input name="costBps" type="number" value="5" min="0" step="0.5" style="width:64px"></label>
+      <label class="toggle"><input type="checkbox" name="shorts" checked> Shorts</label>
+      <button type="submit">Run backtest</button>
+    </form>
+    <div id="btOut"></div>
   </div>
 </section>
 

@@ -216,6 +216,7 @@
       </div>
       <div class="extra">${r.uptrend ? 'Uptrend' : 'No uptrend'} ${signed(r.smaGapPct)} · 50-day ${r.uptrend ? 'above' : 'at or below'} 200-day</div>
       <div class="extra">RSI ${fix(r.rsi, 0)}${r.rsi < 30 ? ' washed' : r.rsi > 70 ? ' stretched' : ''} · MACD ${r.macdUp ? 'up' : 'down'} · ADX ${fix(r.adx, 0)} ${r.adxRising ? 'rising' : 'falling'} · Stoch ${fix(r.stoch, 0)} · Band ${fix(r.bandPct, 0)}%</div>
+      <div class="extra">Quantum Shift 1h · energy ${fix(r.qsEnergy, 0)} · regime ${r.qsRegime > 0 ? '<span class="up">up</span>' : r.qsRegime < 0 ? '<span class="down">down</span>' : 'neutral'}${r.qsLastSignal ? ' · ' + esc(r.qsLastSignal) : ''}</div>
       <div class="extra">${esc(r.trendNote || '')}</div>
       ${r.screenFails?.length ? `<div class="extra warnline">Screen: ${esc(r.screenFails.join(', '))}</div>` : ''}
       ${r.error ? `<div class="extra warnline">${esc(r.error)}</div>` : ''}` : '';
@@ -479,6 +480,51 @@
     ctx.fillText(f(last), w - pad - 40, h - 2);
   }
 
+  // ---------- backtest ----------
+  $('#btForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const f = new FormData(e.target);
+    const q = new URLSearchParams();
+    for (const k of ['tickers', 'days', 'interval', 'threshold', 'maxBars', 'costBps']) if (f.get(k)) q.set(k, f.get(k));
+    q.set('shorts', f.get('shorts') ? 'true' : 'false');
+    $('#btOut').innerHTML = '<p class="muted">Running on every name… this takes a few seconds per dozen tickers.</p>';
+    try { renderBacktest(await api('api/backtest?' + q)); } catch (err) { $('#btOut').innerHTML = `<p class="msg err">${esc(err.message)}</p>`; }
+  });
+
+  function renderBacktest(d) {
+    if (!d || !d.summary) return;
+    const S = d.summary, pc = (v) => isNum(v) ? `<span class="${v >= 0 ? 'up' : 'down'}">${signed(v, 2)}</span>` : '—';
+    const tile = (label, val, sub = '') => `<div><small>${label}</small><b>${val}</b><small>${sub}</small></div>`;
+    const side = (x, n) => `${n}: ${x.trades} trades · win ${fix(x.winRate, 1)}% · avg ${signed(x.avgReturnPct, 2)} · PF ${fix(x.profitFactor)} · avg R ${fix(x.avgR)}`;
+    $('#btOut').innerHTML = `
+      <p class="muted">${d.tested} of ${d.tickers} tickers tested · last ${d.params.days} days · ${esc(d.params.interval)} bars · energy ≥ ${d.params.threshold} · run ${esc(etStamp(d.generatedAt))}</p>
+      <div class="datagrid" style="grid-template-columns:repeat(auto-fit,minmax(120px,1fr))">
+        ${tile('Trades', S.trades, `${S.stocksWithTrades ?? 0} stocks traded`)}
+        ${tile('Win rate', fix(S.winRate, 1) + '%', `${S.wins} wins`)}
+        ${tile('Avg trade', pc(S.avgReturnPct), `avg R ${fix(S.avgR)}`)}
+        ${tile('Profit factor', fix(S.profitFactor), 'gross win / loss')}
+        ${tile('Strategy, equal weight', pc(S.equalWeightReturnPct), `${S.stocksPositive ?? 0} stocks positive`)}
+        ${tile('Buy and hold', pc(S.buyHoldReturnPct), 'same window')}
+        ${tile('Avg hold', fix(S.avgBarsHeld, 1) + ' bars', `best ${signed(S.bestPct, 1)} · worst ${signed(S.worstPct, 1)}`)}
+      </div>
+      <p class="extra">${side(d.longs, 'Longs')}<br>${side(d.shorts, 'Shorts')}</p>
+      <h3>By stock</h3>
+      <div class="tablewrap"><table class="grid"><thead><tr><th>Stock</th><th class="num">Trades</th><th class="num">Win rate</th><th class="num">Avg trade</th><th class="num">Avg R</th><th class="num">Strategy</th><th class="num">Longs</th><th class="num">Shorts</th><th class="num">Max DD</th><th class="num">Buy &amp; hold</th><th class="num">Energy now</th><th>Regime</th><th>Last shift</th></tr></thead><tbody>
+      ${d.stocks.map((r) => r.error ? `<tr><td class="tkr">${esc(r.symbol)}</td><td colspan="12" class="muted">${esc(r.error)}</td></tr>` : `<tr>
+        <td class="tkr">${esc(r.symbol)}</td><td class="num">${r.trades}</td><td class="num">${isNum(r.winRate) ? r.winRate + '%' : '—'}</td>
+        <td class="num">${pc(r.avgReturnPct)}</td><td class="num">${fix(r.avgR)}</td><td class="num"><b>${pc(r.totalReturnPct)}</b></td>
+        <td class="num">${pc(r.longReturnPct)}</td><td class="num">${pc(r.shortReturnPct)}</td>
+        <td class="num">${isNum(r.maxDrawdownPct) ? '-' + r.maxDrawdownPct.toFixed(1) + '%' : '—'}</td><td class="num">${pc(r.buyHoldPct)}</td>
+        <td class="num">${fix(r.lastEnergy, 0)}</td><td>${r.regime > 0 ? '<span class="tag bull">Up</span>' : r.regime < 0 ? '<span class="tag bear">Down</span>' : '<span class="muted">Neutral</span>'}</td>
+        <td class="meta">${esc(r.lastSignal || '—')}</td></tr>`).join('')}
+      </tbody></table></div>
+      <details class="howto" style="margin-top:12px"><summary>All ${d.trades.length} trades</summary>
+      <div class="tablewrap"><table class="grid"><thead><tr><th>Stock</th><th>Side</th><th>Entry (ET)</th><th class="num">Entry</th><th>Exit (ET)</th><th class="num">Exit</th><th class="num">Return</th><th class="num">R</th><th class="num">Bars</th><th>Exit reason</th><th class="num">Energy</th></tr></thead><tbody>
+      ${d.trades.map((t) => `<tr><td class="tkr">${esc(t.symbol)}</td><td><span class="tag ${t.side === 'Long' ? 'long' : 'short'}">${t.side}</span></td><td>${esc(t.entryTime)}</td><td class="num">${fix(t.entry)}</td><td>${esc(t.exitTime)}</td><td class="num">${fix(t.exit)}</td><td class="num">${pc(t.returnPct)}</td><td class="num">${fix(t.r)}</td><td class="num">${t.bars}</td><td>${esc(t.exitReason)}</td><td class="num">${fix(t.energy, 0)}</td></tr>`).join('')}
+      </tbody></table></div></details>`;
+  }
+  api('api/backtest/last').then(renderBacktest).catch(() => {});
+
   // ---------- details ----------
   async function loadDetails() {
     let cfg = null;
@@ -517,6 +563,7 @@
         <li><code>GET /api/watchlist</code>, <code>POST /api/watchlist {"tickers":"SRTA, AUR"}</code>, <code>DELETE /api/watchlist/{ticker}</code>, <code>GET /api/watchlist/export</code>.</li>
         <li><code>GET /api/alerts</code>, <code>POST /api/alerts {"symbol","type":"ABOVE|BELOW|PCT_UP|PCT_DOWN","level","note"}</code>, <code>DELETE /api/alerts/{id}</code>.</li>
         <li><code>GET /api/analyze/{ticker}</code>: quarterly results from SEC EDGAR.</li>
+        <li><code>GET /api/backtest?tickers=&amp;days=60&amp;interval=60m&amp;threshold=60&amp;shorts=true&amp;stopAtr=2&amp;trailAtr=2.5&amp;maxBars=35&amp;costBps=5</code>: Quantum Shift backtest; blank tickers means every name in the app.</li>
         <li><code>GET /api/technicals/{ticker}</code>: indicators on four timeframes and 180 daily closes.</li>
         <li><code>GET /api/config</code>, <code>GET /actuator/health</code>.</li>
       </ul>

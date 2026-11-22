@@ -51,6 +51,11 @@ public class StockRow {
     public String bias;
     public String trendNote;
 
+    // quantum shift (1h)
+    public Double qsEnergy;
+    public int qsRegime;
+    public String qsLastSignal;
+
     // earnings
     public LocalDate earningsDate;
     public Integer earningsInDays;

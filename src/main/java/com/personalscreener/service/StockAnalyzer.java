@@ -100,6 +100,20 @@ public class StockAnalyzer {
         row.trendNote = "Trend: " + (m15.size() + h1.size() + h4.size()) + " completed candles"
                 + (h1.isEmpty() ? "" : " · last 1h " + hhmm(h1.get(h1.size() - 1).time() + 3600));
 
+        if (h1.size() >= 120) {
+            var qs = com.personalscreener.analysis.QuantumShift.compute(h1, 60);
+            int last = h1.size() - 1;
+            row.qsEnergy = Num.round(qs.energy()[last], 0);
+            row.qsRegime = qs.regime()[last];
+            row.qsLastSignal = null;
+            for (int i = last; i >= Math.max(0, last - 35); i--) {
+                if (qs.signal()[i] != 0) {
+                    row.qsLastSignal = (qs.signal()[i] > 0 ? "Shift up " : "Shift down ") + (last - i) + " bars ago";
+                    break;
+                }
+            }
+        }
+
         // ---- live quote -----------------------------------------------------------------
         Quote q = yahoo.chartQuote(c.symbol());
         if (!Double.isNaN(q.preMarketHigh()) && todayLive && q.preMarketHigh() > row.breakoutLevel) {
