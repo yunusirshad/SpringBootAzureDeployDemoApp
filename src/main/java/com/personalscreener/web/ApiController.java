@@ -24,12 +24,14 @@ public class ApiController {
     private final AnalyzeService analyze;
     private final TechnicalsService technicals;
     private final BacktestService backtest;
+    private final SessionService sessions;
     private volatile Map<String, Object> lastBacktest;
     private final MarketClock clock;
     private final ScreenerProperties props;
 
     public ApiController(ScreenService screen, WatchlistService watchlist, AlertService alerts, AnalyzeService analyze,
-                         TechnicalsService technicals, BacktestService backtest, MarketClock clock, ScreenerProperties props) {
+                         TechnicalsService technicals, BacktestService backtest, SessionService sessions, MarketClock clock, ScreenerProperties props) {
+        this.sessions = sessions;
         this.backtest = backtest;
         this.screen = screen;
         this.watchlist = watchlist;
@@ -172,6 +174,14 @@ public class ApiController {
     @GetMapping("/backtest/universe")
     public List<String> backtestUniverse() { return backtest.universe(); }
 
+    /** Asia / London / New York session phases plus candles for the chosen timeframe. */
+    @GetMapping("/sessions/{ticker}")
+    public Map<String, Object> sessions(@PathVariable String ticker, @RequestParam(defaultValue = "15m") String tf,
+                                        @RequestParam(defaultValue = "3") int days) throws Exception {
+        if (days < 1 || days > 15) throw new IllegalArgumentException("days must be 1 to 15");
+        return sessions.read(symbol(ticker), tf, days);
+    }
+
     @GetMapping("/config")
     public Map<String, Object> config() {
         Map<String, Object> m = new LinkedHashMap<>();
@@ -180,6 +190,13 @@ public class ApiController {
         m.put("zoyaConfigured", !props.getZoya().getApiKey().isBlank());
         m.put("maxAnalyzed", props.getMaxAnalyzed());
         return m;
+    }
+
+    /** Tickers plus Yahoo's futures, FX and crypto forms: ES=F, EURUSD=X, BTC-USD, ^GSPC. */
+    private static String symbol(String t) {
+        String s = t == null ? "" : t.trim().toUpperCase(Locale.ROOT);
+        if (!s.matches("^\\^?[A-Z0-9.\\-]{1,12}(=[FX])?$")) throw new IllegalArgumentException("Not a symbol: " + t);
+        return s;
     }
 
     private static String clean(String t) {

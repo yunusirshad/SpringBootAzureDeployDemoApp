@@ -18,6 +18,7 @@
     <button role="tab" data-tab="analyze">Analyze</button>
     <button role="tab" data-tab="technicals">Technicals</button>
     <button role="tab" data-tab="backtest">Backtest</button>
+    <button role="tab" data-tab="sessions">Sessions</button>
     <button role="tab" data-tab="details">APP Details</button>
   </nav>
 </header>
@@ -159,6 +160,28 @@
       <button type="submit">Run backtest</button>
     </form>
     <div id="btOut"></div>
+  </div>
+</section>
+
+<!-- ============================== SESSIONS ============================== -->
+<section id="tab-sessions" class="tab">
+  <div class="card">
+    <div class="card-head"><h2>Session phases</h2><span class="muted small" id="sesStamp"></span></div>
+    <p class="sub">Every Asia (6 PM–2 AM ET), London (2–8 AM ET) and New York (8 AM–5 PM ET) session is scored for accumulation, manipulation, absorption and distribution, each 0–100%. The scores come from 5-minute candles whatever timeframe you pick, so the boxes and percentages never change when you switch. Works on stocks, futures (ES=F), forex (EURUSD=X) and crypto (BTC-USD). Stocks have no Asia session and only a thin London one.</p>
+    <form id="sesForm" class="addrow">
+      <input id="sesInput" placeholder="Symbol, e.g. ES=F" required autocomplete="off" style="width:150px">
+      <div class="seg" id="sesTf">
+        <button type="button" data-tf="5m">5m</button><button type="button" data-tf="15m">15m</button><button type="button" data-tf="1h">1h</button><button type="button" data-tf="4h">4h</button><button type="button" data-tf="1d">1D</button>
+      </div>
+      <select id="sesDays" aria-label="Days"><option value="2">2 days</option><option value="3" selected>3 days</option><option value="5">5 days</option><option value="10">10 days</option></select>
+      <button type="submit">Load</button>
+    </form>
+    <div class="legend seslegend">
+      <span><i class="sw acc"></i>Accumulation</span><span><i class="sw man"></i>Manipulation</span><span><i class="sw abs"></i>Absorption</span><span><i class="sw dist"></i>Distribution</span>
+      <span><i class="sw bullb"></i>Bull</span><span><i class="sw bearb"></i>Bear</span>
+    </div>
+    <div class="seswrap"><canvas id="sesChart" class="seschart"></canvas><div id="sesTip" class="sestip hidden"></div></div>
+    <div id="sesOut"></div>
   </div>
 </section>
 

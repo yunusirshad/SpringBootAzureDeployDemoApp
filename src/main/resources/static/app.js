@@ -525,6 +525,162 @@
   }
   api('api/backtest/last').then(renderBacktest).catch(() => {});
 
+  // ---------- sessions ----------
+  const PHASES = [['accumulation', 'Accumulation', 'acc', 'A'], ['manipulation', 'Manipulation', 'man', 'M'], ['absorption', 'Absorption', 'abs', 'Ab'], ['distribution', 'Distribution', 'dist', 'D']];
+  const SHORT_SESSION = { 'Asia': 'Asia', 'London': 'London', 'New York': 'NY' };
+  let ses = null, sesLayout = null;
+  let sesTf = store.get('sesTf', '15m');
+  $('#sesInput').value = store.get('sesSym', 'ES=F');
+  $('#sesDays').value = String(store.get('sesDays', 3));
+  const markTf = () => $$('#sesTf button').forEach((b) => b.classList.toggle('on', b.dataset.tf === sesTf));
+  markTf();
+  $$('#sesTf button').forEach((b) => b.addEventListener('click', () => { sesTf = b.dataset.tf; store.set('sesTf', sesTf); markTf(); loadSessions(); }));
+  $('#sesDays').addEventListener('change', () => { store.set('sesDays', +$('#sesDays').value); loadSessions(); });
+  $('#sesForm').addEventListener('submit', (e) => { e.preventDefault(); loadSessions(); });
+
+  async function loadSessions() {
+    const sym = $('#sesInput').value.trim().toUpperCase();
+    if (!sym) return;
+    store.set('sesSym', sym);
+    $('#sesOut').innerHTML = '<p class="muted">Reading sessions…</p>';
+    try {
+      ses = await api(`api/sessions/${encodeURIComponent(sym)}?tf=${sesTf}&days=${$('#sesDays').value}`);
+      drawSessions();
+      renderSessionTable();
+    } catch (err) { $('#sesOut').innerHTML = `<p class="msg err">${esc(err.message)}</p>`; }
+  }
+
+  function renderSessionTable() {
+    const s = ses;
+    $('#sesStamp').textContent = `${s.symbol} · ${s.timeframe} candles · scored on ${s.baseTimeframe} · ${etStamp(s.generatedAt)}`;
+    const cell = (p) => `<td class="num"><span class="${p.dir === 'Bull' ? 'up' : 'down'}">${p.pct}%</span><span class="pct">${p.dir}</span></td>`;
+    const rows = s.sessions.slice().reverse().map((x) => `<tr>
+      <td>${esc(x.tradeDate)}</td><td><b>${esc(x.session)}</b>${x.live ? ' <span class="tag mixed">live</span>' : ''}</td>
+      <td><span class="tag ${x.dir === 'Bull' ? 'bull' : 'bear'}">${esc(x.label)} ${x.pct}%</span></td>
+      ${PHASES.map((p) => cell(x[p[0]])).join('')}
+      <td class="num">${fix(x.rangeVsUsual)}×</td><td class="num">${fix(x.effort)}×</td><td class="meta">${esc(x.sweep || '—')}</td></tr>`).join('');
+    $('#sesOut').innerHTML = `<div class="tablewrap"><table class="grid"><thead><tr><th>Date</th><th>Session</th><th>Reading</th>
+      <th class="num">Accum.</th><th class="num">Manip.</th><th class="num">Absorb.</th><th class="num">Distrib.</th>
+      <th class="num">Range vs usual</th><th class="num">Effort</th><th>Sweep</th></tr></thead><tbody>
+      ${rows || '<tr class="empty"><td colspan="10">No sessions in this window.</td></tr>'}</tbody></table></div>`;
+  }
+
+  function drawSessions() {
+    const canvas = $('#sesChart'), d = ses;
+    if (!d) return;
+    const css = getComputedStyle(document.documentElement), col = (v) => css.getPropertyValue(v).trim();
+    const dpr = window.devicePixelRatio || 1, w = canvas.clientWidth, h = canvas.clientHeight;
+    canvas.width = w * dpr; canvas.height = h * dpr;
+    const ctx = canvas.getContext('2d');
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, w, h);
+    const C = d.candles, S = d.sessions, dur = d.candleSeconds;
+    if (!C.length) { ctx.fillStyle = col('--muted'); ctx.fillText('No candles in this window.', 20, 30); return; }
+    const left = 8, right = 64, top = 8, bottom = 26;
+    const slot = (w - left - right) / C.length;
+    // time -> x on a candle-index axis, so session boxes line up on any timeframe
+    const tx = (t) => {
+      let lo = 0, hi = C.length - 1;
+      if (t <= C[0].t) return left;
+      while (lo < hi) { const m = (lo + hi + 1) >> 1; if (C[m].t <= t) lo = m; else hi = m - 1; }
+      const c = C[lo], frac = Math.min(1, (t - c.t) / dur);
+      if (t >= c.t + dur && lo + 1 < C.length) return left + (lo + 1) * slot; // in a gap: snap to the next candle
+      return left + (lo + frac) * slot;
+    };
+    let lo = Infinity, hi = -Infinity;
+    C.forEach((c) => { lo = Math.min(lo, c.l); hi = Math.max(hi, c.h); });
+    S.forEach((s) => { lo = Math.min(lo, s.low); hi = Math.max(hi, s.high); });
+    const pad = (hi - lo) * 0.08 || 1; lo -= pad; hi += pad * 2.2;
+    const py = (v) => top + (1 - (v - lo) / (hi - lo)) * (h - top - bottom);
+    const dec = hi < 2 ? 5 : hi < 20 ? 3 : 2;
+
+    // grid + price axis
+    ctx.font = '11px -apple-system, Segoe UI, sans-serif';
+    ctx.strokeStyle = col('--border'); ctx.fillStyle = col('--muted'); ctx.lineWidth = 1;
+    for (let k = 0; k <= 5; k++) {
+      const v = lo + (hi - lo) * k / 5, y = py(v);
+      ctx.beginPath(); ctx.moveTo(left, y); ctx.lineTo(w - right, y); ctx.stroke();
+      ctx.fillText(v.toFixed(dec), w - right + 6, y + 4);
+    }
+
+    // session boxes underneath the candles
+    const phaseColor = { Accumulation: col('--acc'), Manipulation: col('--man'), Absorption: col('--abs'), Distribution: col('--dist') };
+    sesLayout = [];
+    S.forEach((s) => {
+      const x0 = tx(s.start), x1 = Math.max(x0 + 2, tx(s.end)), y0 = py(s.high), y1 = py(s.low);
+      const phase = s.label.split(' ')[1], fill = phaseColor[phase];
+      ctx.globalAlpha = 0.10 + 0.22 * (s.pct / 100);
+      ctx.fillStyle = fill; ctx.fillRect(x0, y0, x1 - x0, y1 - y0);
+      ctx.globalAlpha = 1;
+      ctx.strokeStyle = s.dir === 'Bull' ? col('--bull') : col('--bear');
+      ctx.lineWidth = 1.5; ctx.setLineDash(s.live ? [4, 3] : []);
+      ctx.strokeRect(x0 + 0.5, y0 + 0.5, x1 - x0 - 1, y1 - y0 - 1);
+      ctx.setLineDash([]);
+      sesLayout.push({ s, x0, x1, y0, y1 });
+    });
+
+    // candles
+    const bw = Math.max(1, Math.min(14, slot * 0.7));
+    C.forEach((c, i) => {
+      const x = left + (i + 0.5) * slot, up = c.c >= c.o;
+      ctx.strokeStyle = ctx.fillStyle = up ? col('--bull') : col('--bear');
+      ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(x, py(c.h)); ctx.lineTo(x, py(c.l)); ctx.stroke();
+      const yo = py(c.o), yc = py(c.c);
+      ctx.fillRect(x - bw / 2, Math.min(yo, yc), bw, Math.max(1, Math.abs(yc - yo)));
+    });
+
+    // labels on top of each box: session, dominant phase %, then all four
+    sesLayout.forEach(({ s, x0, x1, y0 }) => {
+      const width = x1 - x0, phase = s.label.split(' ')[1];
+      const lines = width > 150
+        ? [`${SHORT_SESSION[s.session]} · ${s.pct}% ${s.dir} ${phase}`, PHASES.map((p) => `${p[3]} ${s[p[0]].pct}%`).join(' · ')]
+        : width > 70 ? [`${SHORT_SESSION[s.session]} ${s.pct}% ${s.dir}`, phase] : [`${s.pct}%`, PHASES.find((p) => p[1] === phase)[3]];
+      ctx.font = '600 11px -apple-system, Segoe UI, sans-serif';
+      const lh = 13, boxH = lines.length * lh + 4, y = Math.max(top + boxH, y0 - 3);
+      ctx.fillStyle = s.dir === 'Bull' ? col('--bull') : col('--bear');
+      ctx.fillText(lines[0], x0 + 3, y - boxH + lh, width - 4);
+      ctx.font = '11px -apple-system, Segoe UI, sans-serif';
+      ctx.fillStyle = col('--muted');
+      if (lines[1]) ctx.fillText(lines[1], x0 + 3, y - boxH + 2 * lh, width - 4);
+    });
+
+    // date ticks at each New York session start
+    ctx.fillStyle = col('--muted');
+    let lastX = -999;
+    S.filter((s) => s.session === 'Asia').forEach((s) => {
+      const x = tx(s.start);
+      if (x - lastX < 60) return;
+      lastX = x;
+      ctx.fillText(s.tradeDate.slice(5), x, h - 8);
+      ctx.strokeStyle = col('--border'); ctx.setLineDash([2, 3]);
+      ctx.beginPath(); ctx.moveTo(x, top); ctx.lineTo(x, h - bottom); ctx.stroke(); ctx.setLineDash([]);
+    });
+  }
+
+  $('#sesChart').addEventListener('mousemove', (e) => {
+    const tip = $('#sesTip');
+    if (!sesLayout) return;
+    const r = e.currentTarget.getBoundingClientRect(), x = e.clientX - r.left, y = e.clientY - r.top;
+    const hit = sesLayout.find((b) => x >= b.x0 && x <= b.x1 && y >= b.y0 - 30 && y <= b.y1);
+    if (!hit) { tip.classList.add('hidden'); return; }
+    const s = hit.s, colr = { acc: 'var(--acc)', man: 'var(--man)', abs: 'var(--abs)', dist: 'var(--dist)' };
+    tip.innerHTML = `<b>${esc(s.session)} · ${esc(s.tradeDate)}</b>${s.live ? ' <span class="tag mixed">live</span>' : ''}
+      <div class="${s.dir === 'Bull' ? 'up' : 'down'}" style="font-weight:700;margin:2px 0">${s.pct}% ${esc(s.label)}</div>
+      ${PHASES.map((p) => `<div class="pbar"><span>${p[1]}</span><span class="b"><i style="width:${s[p[0]].pct}%;background:${colr[p[2]]}"></i></span><span class="${s[p[0]].dir === 'Bull' ? 'up' : 'down'}">${s[p[0]].pct}%</span></div>`).join('')}
+      <div class="meta" style="margin-top:4px">H ${fix(s.high, 4)} · L ${fix(s.low, 4)} · range ${fix(s.rangeVsUsual)}× usual · effort ${fix(s.effort)}×</div>
+      ${s.sweep ? `<div class="meta">${esc(s.sweep)}</div>` : ''}`;
+    tip.classList.remove('hidden');
+    tip.style.left = Math.min(x + 14, r.width - 240) + 'px';
+    tip.style.top = (y + 14) + 'px';
+  });
+  $('#sesChart').addEventListener('mouseleave', () => $('#sesTip').classList.add('hidden'));
+  window.addEventListener('resize', () => { if (ses && $('#tab-sessions').classList.contains('active')) drawSessions(); });
+  $$('.tabs button').forEach((b) => b.addEventListener('click', () => {
+    if (b.dataset.tab === 'sessions') { if (ses) drawSessions(); else loadSessions(); }
+  }));
+  if (store.get('tab', 'screen') === 'sessions') setTimeout(loadSessions, 0);
+
   // ---------- details ----------
   async function loadDetails() {
     let cfg = null;
@@ -553,6 +709,7 @@
         <li><b>To breakout</b>: the distance to the higher of today's premarket high and the prior day's high.</li>
         <li><b>Bias</b>: close against a rising or falling 20 EMA on completed 15-minute, 1-hour and 4-hour candles. More up than down is Bullish, more down is Bearish, otherwise Mixed.</li>
         <li><b>GEX levels</b>: from the next listed option expiry. Call wall and put wall are the strikes with the most call and put open interest; King is the strike with the largest net gamma exposure. The percent is the strike's share of open interest on that expiry. Chains load at 8:00 AM ET each weekday.</li>
+        <li><b>Session phases</b> (Sessions tab): Asia 6 PM–2 AM, London 2–8 AM, New York 8 AM–5 PM ET, each scored 0–100% for accumulation (tight, quiet balance), manipulation (sweeps the prior session's high or low and closes back inside), absorption (heavy effort, no progress) and distribution (a one-way expansion). Scored on 5-minute candles only, so every timeframe shows the same boxes. Bull/Bear comes from the close location, the swept side or the body direction.</li>
         <li><b>Market line</b>: SPY, QQQ and IWM against today's VWAP, and advancers/decliners on Nasdaq and NYSE.</li>
       </ul>
       <h3>API guide</h3>
@@ -564,6 +721,7 @@
         <li><code>GET /api/alerts</code>, <code>POST /api/alerts {"symbol","type":"ABOVE|BELOW|PCT_UP|PCT_DOWN","level","note"}</code>, <code>DELETE /api/alerts/{id}</code>.</li>
         <li><code>GET /api/analyze/{ticker}</code>: quarterly results from SEC EDGAR.</li>
         <li><code>GET /api/backtest?tickers=&amp;days=60&amp;interval=60m&amp;threshold=60&amp;shorts=true&amp;stopAtr=2&amp;trailAtr=2.5&amp;maxBars=35&amp;costBps=5</code>: Quantum Shift backtest; blank tickers means every name in the app.</li>
+        <li><code>GET /api/sessions/{symbol}?tf=5m|15m|1h|4h|1d&amp;days=3</code>: Asia, London and New York session phases (scored on 5-minute candles) plus candles for the chosen timeframe.</li>
         <li><code>GET /api/technicals/{ticker}</code>: indicators on four timeframes and 180 daily closes.</li>
         <li><code>GET /api/config</code>, <code>GET /actuator/health</code>.</li>
       </ul>

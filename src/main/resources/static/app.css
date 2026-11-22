@@ -128,3 +128,21 @@ canvas.chart { width: 100%; height: 280px; display: block; margin: 8px 0 14px; }
   .datagrid { grid-template-columns: repeat(2, minmax(90px, 1fr)); min-width: 220px; }
   .hint { display: none; }
 }
+
+/* sessions */
+:root { --acc: #3b82f6; --man: #a855f7; --abs: #f59e0b; --dist: #14b8a6; }
+.seg { display: inline-flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+.seg button { background: var(--surface); color: var(--text); border: 0; border-radius: 0; padding: 6px 10px; font-weight: 600; }
+.seg button.on { background: var(--accent); color: #fff; }
+.seswrap { position: relative; }
+canvas.seschart { width: 100%; height: 540px; display: block; margin: 6px 0 12px; }
+.seslegend { flex-wrap: wrap; margin-top: 4px; }
+.sw { display: inline-block; width: 12px; height: 12px; border-radius: 3px; vertical-align: -2px; margin-right: 4px; }
+.sw.acc { background: var(--acc); } .sw.man { background: var(--man); } .sw.abs { background: var(--abs); } .sw.dist { background: var(--dist); }
+.sw.bullb { border: 2px solid var(--bull); } .sw.bearb { border: 2px solid var(--bear); }
+.sestip { position: absolute; pointer-events: none; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; font-size: 12px; box-shadow: 0 4px 14px rgba(0,0,0,.18); min-width: 200px; z-index: 3; }
+.pbar { display: grid; grid-template-columns: 92px 1fr 40px; gap: 6px; align-items: center; margin-top: 3px; }
+.pbar span.b { height: 6px; border-radius: 3px; background: var(--meter); overflow: hidden; display: block; }
+.pbar span.b i { display: block; height: 100%; }
+@media (max-width: 640px) { canvas.seschart { height: 420px; } }
+.legend i.sw { width: 12px; height: 12px; }
