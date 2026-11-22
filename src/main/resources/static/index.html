@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Personal Screener 2026</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<header class="top">
+  <div class="brand">
+    <div class="tagline">Price every 10s · chain at 8:00am ET</div>
+    <h1>Personal Screener 2026</h1>
+  </div>
+  <nav class="tabs" role="tablist">
+    <button role="tab" data-tab="screen" class="active">Screen</button>
+    <button role="tab" data-tab="alerts">Alerts <span id="alertBadge" class="badge hidden"></span></button>
+    <button role="tab" data-tab="analyze">Analyze</button>
+    <button role="tab" data-tab="technicals">Technicals</button>
+    <button role="tab" data-tab="details">APP Details</button>
+  </nav>
+</header>
+
+<main>
+<!-- ============================== SCREEN ============================== -->
+<section id="tab-screen" class="tab active">
+  <p class="lede">Pulled from TradingView with your filters, then each name is checked on Zoya. A stock can pass every ratio and still be non-compliant.</p>
+  <div id="filterChips" class="chips"></div>
+  <div class="statusline">
+    <span id="statusLine">Loading…</span>
+    <label class="toggle"><input type="checkbox" id="showAll"> Show all</label>
+    <button id="refreshBtn" class="ghost small">Refresh now</button>
+  </div>
+  <div id="screenNote" class="note hidden"></div>
+
+  <details class="howto">
+    <summary>How to read a row</summary>
+    <p id="qualityHelp"></p>
+    <p>Indicators are readings, not filters. RSI under 70 is not stretched. MACD up means the line is above its signal. ADX over 25 is a strong trend, and rising means the positive direction is above the negative. Band is where the close sits between the Bollinger bands.</p>
+  </details>
+
+  <div id="pulse" class="pulse">—</div>
+
+  <div class="toolbar">
+    <input id="search" type="search" placeholder="Search ticker" autocomplete="off">
+    <select id="stateFilter" aria-label="Trend classification">
+      <option value="">All trend classifications</option>
+      <option>Bull initiation</option><option>Bull accumulation</option><option>Bull manipulation</option>
+      <option>Bear initiation</option><option>Bear distribution</option><option>Bear manipulation</option>
+    </select>
+    <select id="sortBy" aria-label="Sort">
+      <option value="screen">Sort: screen</option>
+      <option value="quality">Sort: quality</option>
+      <option value="breakout">Sort: closest to breakout</option>
+      <option value="change">Sort: from yesterday</option>
+      <option value="rvol">Sort: relative volume</option>
+      <option value="ticker">Sort: ticker</option>
+    </select>
+    <a href="#" data-goto="details" class="link">API guide</a>
+  </div>
+
+  <div class="card">
+    <div class="card-head">
+      <h2>GEX levels</h2>
+      <div class="gexfilters">
+        <select id="gexState" aria-label="State"><option value="">Any state</option><option value="Bull" selected>Bull</option><option value="Bear">Bear</option></select>
+        <select id="gexBias" aria-label="Bias"><option value="">Any bias</option><option selected>Bullish</option><option>Bearish</option><option>Mixed</option></select>
+        <select id="gexSide" aria-label="Side"><option value="">Any side</option><option selected>Long</option><option>Short</option></select>
+      </div>
+    </div>
+    <p class="sub">Next listed expiry. The percent is that strike's share of open interest on the expiry, which is the pull toward the level. It is not a forecast.</p>
+    <div class="tablewrap"><table class="grid" id="gexTable"></table></div>
+  </div>
+
+  <div class="card super">
+    <div class="card-head"><h2>Super core stock <span class="count" id="superCount">0</span></h2></div>
+    <p class="sub">The one name to buy. It has to be compliant, above the 1-hour 20 EMA, at least 1× relative volume, outside 3 days of earnings, and a quality pass. The closest to the breakout wins.</p>
+    <div id="superBody"></div>
+  </div>
+
+  <div class="card">
+    <div class="card-head"><h2>Top 10 stocks <span class="count" id="topCount">0</span></h2></div>
+    <p class="sub">The 10 strongest uptrends. A name qualifies only when the 50-day average is above the 200-day. Rank is that gap as a percent of the 200-day.</p>
+    <div class="tablewrap"><table class="grid" id="topTable"></table></div>
+  </div>
+
+  <div class="card">
+    <div class="card-head"><h2>Core stocks <span class="count" id="coreCount">0</span></h2></div>
+    <p class="sub">Every other name that qualifies. A name with the 50-day at or below the 200-day is left off both lists until it qualifies.</p>
+    <form id="addForm" class="addrow">
+      <input id="addInput" placeholder="Ticker" aria-label="Ticker" autocomplete="off">
+      <button type="submit">Add</button>
+      <span class="hint">Bulk add: SRTA, AUR, EVLV</span>
+      <span class="spacer"></span>
+      <label class="ghost small filebtn">Import<input type="file" id="importFile" accept=".txt,.csv"></label>
+      <a class="ghost small btn" href="api/watchlist/export">Export</a>
+    </form>
+    <div class="tablewrap"><table class="grid" id="coreTable"></table></div>
+    <div id="noUptrend" class="nouptrend"></div>
+  </div>
+</section>
+
+<!-- ============================== ALERTS ============================== -->
+<section id="tab-alerts" class="tab">
+  <div class="card">
+    <div class="card-head"><h2>Price alerts</h2><button id="notifyBtn" class="ghost small">Turn on notifications</button></div>
+    <p class="sub">Checked on every price tick. Each alert rings once, then stays in the log.</p>
+    <form id="alertForm" class="alertform">
+      <input name="symbol" placeholder="Ticker" required autocomplete="off">
+      <select name="type">
+        <option value="ABOVE">Price at or above</option>
+        <option value="BELOW">Price at or below</option>
+        <option value="PCT_UP">Up % from close</option>
+        <option value="PCT_DOWN">Down % from close</option>
+      </select>
+      <input name="level" type="number" step="0.01" min="0" placeholder="Level" required>
+      <input name="note" placeholder="Note (optional)">
+      <button type="submit">Add alert</button>
+    </form>
+    <div id="alertMsg" class="msg"></div>
+    <div class="tablewrap"><table class="grid" id="alertTable"></table></div>
+  </div>
+</section>
+
+<!-- ============================== ANALYZE ============================== -->
+<section id="tab-analyze" class="tab">
+  <div class="card">
+    <div class="card-head"><h2>Earnings analyst</h2></div>
+    <p class="sub">Reported numbers from SEC EDGAR (10-Q and 10-K XBRL facts). Fourth quarters are the fiscal year minus the first nine months.</p>
+    <form id="analyzeForm" class="addrow"><input id="analyzeInput" placeholder="Ticker" required autocomplete="off"><button>Analyze</button></form>
+    <div id="analyzeOut"></div>
+  </div>
+</section>
+
+<!-- ============================== TECHNICALS ============================== -->
+<section id="tab-technicals" class="tab">
+  <div class="card">
+    <div class="card-head"><h2>Technicals</h2></div>
+    <p class="sub">Completed candles only. 4-hour candles are built from 1-hour candles inside each session.</p>
+    <form id="techForm" class="addrow"><input id="techInput" placeholder="Ticker" required autocomplete="off"><button>Load</button></form>
+    <div id="techOut"></div>
+  </div>
+</section>
+
+<!-- ============================== DETAILS ============================== -->
+<section id="tab-details" class="tab">
+  <div class="card prose" id="detailsBody"></div>
+</section>
+</main>
+
+<div id="toast" class="toast hidden" role="status"></div>
+<script src="app.js"></script>
+</body>
+</html>

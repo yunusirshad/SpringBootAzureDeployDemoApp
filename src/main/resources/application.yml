@@ -1,0 +1,59 @@
+server:
+  port: ${PORT:8080}
+  compression:
+    enabled: true
+    mime-types: application/json,text/html,text/css,application/javascript
+
+spring:
+  application:
+    name: personal-screener
+  jackson:
+    serialization:
+      write-dates-as-timestamps: false
+    default-property-inclusion: always
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+
+screener:
+  # Azure App Service keeps /home across restarts: set SCREENER_DATA_DIR=/home/data there.
+  data-dir: ${SCREENER_DATA_DIR:./data}
+  max-analyzed: 60
+  filters:
+    exchanges: [NASDAQ, NYSE]
+    price-min: 1.5
+    price-max: 20
+    market-cap-min: 300000000
+    target-upside-min: 25
+    debt-equity-max: 0.5
+    debt-assets-max: 0.3
+    debt-capital-max: 0.3
+    cash-debt-min: 1
+    revenue-growth-min: 5
+  quality:
+    pass-score: 60
+    min-dollar-volume: 2000000
+    max-spread-bps: 50
+    rel-vol-min: 0.5
+    rel-vol-max: 2
+    dollar-vol-min: 500000
+    dollar-vol-max: 20000000
+    spread-min: 5
+    spread-max: 80
+    float-min: 2000000
+    float-max: 50000000
+    atr-pct-min: 3
+    atr-pct-max: 12
+  zoya:
+    api-key: ${ZOYA_API_KEY:}
+    url: ${ZOYA_API_URL:https://api.zoya.finance/graphql}
+    cache-hours: 24
+  yahoo:
+    crumb-enabled: ${SCREENER_YAHOO_CRUMB:true}
+  sec:
+    user-agent: ${SCREENER_SEC_USER_AGENT:PersonalScreener/2026 contact@example.com}
+  # Used only when TradingView cannot be reached.
+  fallback-universe: [IOVA, AMPL, FRSH, DCTH, BB, FENC, RELY, PATH, MITK, DSP, OMDA, ANGO, ADMA, KOPN, MTUS, INNV]
