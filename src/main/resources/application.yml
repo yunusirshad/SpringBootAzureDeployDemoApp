@@ -7,6 +7,13 @@ server:
 spring:
   application:
     name: personal-screener
+  # The page's HTML, JS and CSS are re-checked on every load (a 304 when unchanged), so after an update the
+  # browser never runs an old app.js against a new index.html.
+  web:
+    resources:
+      cache:
+        cachecontrol:
+          no-cache: true
   jackson:
     serialization:
       write-dates-as-timestamps: false
