@@ -94,7 +94,13 @@ public class ApiController {
         m.put("alerts", screen.recentAlerts());
         m.put("pvAlerts", pv.recentAlerts());
         var todayBias = bias.today(clock.now().toLocalDate());
-        if (todayBias != null) m.put("bias", Map.of("date", todayBias.date, "title", BiasService.title(todayBias), "summary", todayBias.summary));
+        if (todayBias != null) {
+            var last = todayBias.intraday.isEmpty() ? null : todayBias.intraday.get(todayBias.intraday.size() - 1);
+            m.put("bias", last == null
+                    ? Map.of("id", todayBias.date, "title", BiasService.title(todayBias), "summary", todayBias.summary)
+                    : Map.of("id", todayBias.date + " " + last.time, "title",
+                            BiasService.intradayTitle(last, clock.now().toLocalDate()), "summary", last.summary));
+        }
         m.put("generatedAt", s.generatedAt);
         m.put("running", screen.isRunning());
         return m;
@@ -229,6 +235,10 @@ public class ApiController {
         var today = bias.today(clock.now().toLocalDate());
         m.put("today", today);
         m.put("preview", today == null || refresh ? bias.preview(refresh) : null);
+        var now = clock.now();
+        boolean inSession = clock.isTradingDay(now.toLocalDate()) && !now.toLocalTime().isBefore(java.time.LocalTime.of(10, 0))
+                && now.toLocalTime().isBefore(java.time.LocalTime.of(16, 5));
+        if (refresh && inSession) m.put("intradayNow", bias.computeIntraday(now));
         m.put("history", bias.history());
         m.put("accuracy", bias.accuracy());
         m.put("channels", bias.channels());

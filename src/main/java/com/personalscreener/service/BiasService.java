@@ -41,17 +41,29 @@ public class BiasService {
         public Boolean correct;
         public List<String> sent = List.of();
         public boolean late;
+        /** Hourly readings during the session, 10:00 AM to 4:00 PM ET. */
+        public List<Intraday> intraday = new ArrayList<>();
+    }
+
+    public static class Intraday {
+        public String time, at, bias, strength, lean, summary, flippedFrom;
+        public int score, max;
+        public List<MarketBias.Factor> factors = List.of();
+        public List<String> sent = List.of();
     }
 
     private final YahooClient yahoo;
     private final MarketClock clock;
     private final JsonStore store;
     private final Notifier notifier;
+    private final com.personalscreener.data.TradingViewClient tv;
     private final List<Record> history;
     private volatile Record preview;
     private volatile Instant previewAt = Instant.EPOCH;
 
-    public BiasService(YahooClient yahoo, MarketClock clock, JsonStore store, Notifier notifier) {
+    public BiasService(YahooClient yahoo, MarketClock clock, JsonStore store, Notifier notifier,
+                       com.personalscreener.data.TradingViewClient tv) {
+        this.tv = tv;
         this.yahoo = yahoo;
         this.clock = clock;
         this.store = store;
@@ -71,6 +83,112 @@ public class BiasService {
     @Scheduled(cron = "0 20 16 * * MON-FRI", zone = "America/New_York")
     public void afterClose() { fillOutcomes(); }
 
+    /** On the hour from 10:00 AM to 4:00 PM ET: the intraday reading, with a phone alert when the bias flips. */
+    @Scheduled(cron = "0 0 10-16 * * MON-FRI", zone = "America/New_York")
+    public void hourly() {
+        ZonedDateTime now = clock.now();
+        if (clock.isTradingDay(now.toLocalDate())) intradayCall(now.withMinute(0).withSecond(0).withNano(0), true);
+    }
+
+    /**
+     * Reads the session at {@code cut} (a whole hour), adds it to today's record and, when {@code phone} is set and
+     * the bias differs from the previous reading (or the 9:30 call), alerts Telegram / ntfy.
+     */
+    public synchronized Intraday intradayCall(ZonedDateTime cut, boolean phone) {
+        LocalDate d = cut.toLocalDate();
+        Record day = today(d);
+        if (day == null) day = call(false, true);
+        Intraday r = computeIntraday(cut);
+        String before = day.intraday.isEmpty() ? day.bias : day.intraday.get(day.intraday.size() - 1).bias;
+        if (!r.bias.equals(before)) r.flippedFrom = before;
+        if (phone && r.flippedFrom != null) r.sent = notifier.send(intradayTitle(r, d), body(r.summary, r.factors));
+        day.intraday.removeIf(x -> x.time.equals(r.time));
+        day.intraday.add(r);
+        store.write(FILE, new ArrayList<>(history));
+        log.info("Intraday bias {} {}: {}{}", d, r.time, r.summary, r.flippedFrom == null ? "" : " (flipped from " + r.flippedFrom + ")");
+        return r;
+    }
+
+    public static String intradayTitle(Intraday r, LocalDate d) {
+        return "Intraday bias " + d + " " + r.time + " ET: " + r.bias.toUpperCase()
+                + (r.bias.equals("Neutral") ? "" : " (" + r.strength + ")")
+                + (r.flippedFrom == null ? ", unchanged" : ", flipped from " + r.flippedFrom);
+    }
+
+    /** The session read at {@code cut} from 5-minute bars that finished by then. */
+    public Intraday computeIntraday(ZonedDateTime cut) {
+        LocalDate d = cut.toLocalDate();
+        long cutSec = cut.toEpochSecond(), open = d.atTime(9, 30).atZone(MarketClock.ET).toEpochSecond();
+        double spy = Double.NaN, orH = Double.NaN, orL = Double.NaN, spyV = Double.NaN, qqq = Double.NaN, qqqV = Double.NaN,
+                iwm = Double.NaN, iwmV = Double.NaN, spyOpen = Double.NaN, c15 = Double.NaN, e15 = Double.NaN, e15b = Double.NaN,
+                vix = Double.NaN, vixOpen = Double.NaN;
+        Integer up = null, dn = null;
+        SessionPhases.Session ny = null;
+        try {
+            List<Bar> b = session(yahoo.chart("SPY", "5m", "1d", false).bars(), open, cutSec);
+            if (!b.isEmpty()) {
+                spy = b.get(b.size() - 1).close();
+                spyOpen = b.get(0).open();
+                spyV = Indicators.vwap(b);
+                if (cutSec >= open + 1800) {
+                    orH = Double.NEGATIVE_INFINITY; orL = Double.POSITIVE_INFINITY;
+                    for (Bar x : b) if (x.time() < open + 1800) { orH = Math.max(orH, x.high()); orL = Math.min(orL, x.low()); }
+                }
+            }
+        } catch (Exception e) { log.warn("Intraday: SPY failed: {}", e.getMessage()); }
+        try {
+            List<Bar> b = session(yahoo.chart("QQQ", "5m", "1d", false).bars(), open, cutSec);
+            if (!b.isEmpty()) { qqq = b.get(b.size() - 1).close(); qqqV = Indicators.vwap(b); }
+        } catch (Exception e) { log.warn("Intraday: QQQ failed: {}", e.getMessage()); }
+        try {
+            List<Bar> b = session(yahoo.chart("IWM", "5m", "1d", false).bars(), open, cutSec);
+            if (!b.isEmpty()) { iwm = b.get(b.size() - 1).close(); iwmV = Indicators.vwap(b); }
+        } catch (Exception e) { log.warn("Intraday: IWM failed: {}", e.getMessage()); }
+        try {
+            List<Bar> b15 = yahoo.chart("SPY", "15m", "5d", false).bars().stream().filter(x -> x.time() + 900 <= cutSec).toList();
+            double[] c = Indicators.closes(b15);
+            double[] ema = Indicators.emaSeries(c, 20);
+            if (c.length > 23) { c15 = c[c.length - 1]; e15 = ema[c.length - 1]; e15b = ema[c.length - 4]; }
+        } catch (Exception e) { log.warn("Intraday: SPY 15m failed: {}", e.getMessage()); }
+        try {
+            List<Bar> b = session(yahoo.chart("^VIX", "5m", "1d", false).bars(), open, cutSec);
+            if (!b.isEmpty()) { vix = b.get(b.size() - 1).close(); vixOpen = b.get(0).open(); }
+        } catch (Exception e) { log.warn("Intraday: VIX failed: {}", e.getMessage()); }
+        // breadth is a live count, so it is used only when the reading is for now (not a late catch-up)
+        if (Math.abs(Instant.now().getEpochSecond() - cutSec) <= 900) {
+            try {
+                int[] nas = tv.breadth("NASDAQ"), nyse = tv.breadth("NYSE");
+                up = nas[0] + nyse[0];
+                dn = nas[1] + nyse[1];
+            } catch (Exception e) { log.debug("Intraday: breadth unavailable: {}", e.getMessage()); }
+        }
+        try {
+            List<Bar> es = yahoo.chart("ES=F", "5m", "5d", true).bars().stream().filter(x -> x.time() + 300 <= cutSec).toList();
+            for (SessionPhases.Session s : SessionPhases.read(es, cutSec, false)) {
+                if (s.tradeDate().equals(d) && s.session().equals("New York")) ny = s;
+            }
+        } catch (Exception e) { log.warn("Intraday: ES failed: {}", e.getMessage()); }
+
+        MarketBias.Result res = com.personalscreener.analysis.IntradayBias.score(new com.personalscreener.analysis.IntradayBias.Inputs(
+                spy, orH, orL, spyV, qqq, qqqV, iwm, iwmV, spyOpen, c15, e15, e15b, up, dn, vix, vixOpen, ny));
+        Intraday r = new Intraday();
+        r.time = String.format("%d:%02d", cut.getHour() > 12 ? cut.getHour() - 12 : cut.getHour(), cut.getMinute()) + (cut.getHour() >= 12 ? " PM" : " AM");
+        r.at = OffsetDateTime.now().toString();
+        r.bias = res.bias();
+        r.strength = res.strength();
+        r.lean = res.lean();
+        r.summary = res.summary();
+        r.score = res.score();
+        r.max = res.max();
+        r.factors = res.factors();
+        return r;
+    }
+
+    /** Regular-session 5-minute bars from the open that finished by {@code cutSec}. */
+    static List<Bar> session(List<Bar> bars, long open, long cutSec) {
+        return bars.stream().filter(b -> b.time() >= open && b.time() + 300 <= cutSec).toList();
+    }
+
     /** Started after 9:30 on a trading day with no call yet: make it now, in the app only (marked late). */
     @EventListener(ApplicationReadyEvent.class)
     public void onStart() {
@@ -79,6 +197,14 @@ public class BiasService {
                 ZonedDateTime now = clock.now();
                 LocalDate d = now.toLocalDate();
                 if (clock.isTradingDay(d) && !now.toLocalTime().isBefore(CALL_TIME) && today(d) == null) call(false, true);
+                // hours missed while the app was off (no phone alerts for these)
+                if (clock.isTradingDay(d) && today(d) != null) {
+                    for (int h = 10; h <= Math.min(16, now.getHour()); h++) {
+                        ZonedDateTime cut = d.atTime(h, 0).atZone(MarketClock.ET);
+                        String label = (h > 12 ? h - 12 : h) + ":00" + (h >= 12 ? " PM" : " AM");
+                        if (today(d).intraday.stream().noneMatch(x -> x.time.equals(label))) intradayCall(cut, false);
+                    }
+                }
                 fillOutcomes();
             } catch (Exception e) {
                 log.warn("Bias catch-up failed: {}", e.getMessage());
@@ -229,9 +355,11 @@ public class BiasService {
         return "Market bias " + r.date + ": " + r.bias.toUpperCase() + (r.bias.equals("Neutral") ? "" : " (" + r.strength + ")");
     }
 
-    public static String body(Record r) {
-        StringBuilder b = new StringBuilder(r.summary).append('\n');
-        for (MarketBias.Factor f : r.factors) {
+    public static String body(Record r) { return body(r.summary, r.factors); }
+
+    public static String body(String summary, List<MarketBias.Factor> factors) {
+        StringBuilder b = new StringBuilder(summary).append('\n');
+        for (MarketBias.Factor f : factors) {
             b.append(f.points() > 0 ? "▲ " : f.points() < 0 ? "▼ " : "· ").append(f.name()).append(": ").append(f.reading())
                     .append(f.points() == 0 ? "" : " (" + (f.points() > 0 ? "+" : "") + f.points() + ")").append('\n');
         }

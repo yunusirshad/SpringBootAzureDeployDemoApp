@@ -72,6 +72,11 @@ public final class MarketBias {
         f.add(session("ES London session", in.esLondon()));
         f.add(session("ES Asia session", in.esAsia()));
 
+        return fromFactors(f);
+    }
+
+    /** The call from a list of scored factors: +2 or more Bullish, -2 or less Bearish, else Neutral. */
+    public static Result fromFactors(List<Factor> f) {
         int score = f.stream().mapToInt(Factor::points).sum();
         int max = f.stream().mapToInt(Factor::max).sum();
         String bias = score >= 2 ? "Bullish" : score <= -2 ? "Bearish" : "Neutral";

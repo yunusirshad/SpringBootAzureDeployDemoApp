@@ -266,3 +266,13 @@ canvas.seschart { width: 100%; height: 540px; display: block; margin: 6px 0 12px
 .biasgrid { display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr); gap: 16px; }
 @media (max-width: 900px) { .biasgrid { grid-template-columns: minmax(0, 1fr); } }
 .biasmini { font-weight: 700; } .biasmini.up { color: var(--bull); } .biasmini.down { color: var(--bear); } .biasmini.mixed { color: var(--mixed); }
+.intraday { margin: 0 0 12px; }
+.ibline { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0; }
+.ibpill { display: flex; align-items: baseline; gap: 6px; border: 1px solid var(--border); border-radius: 6px; padding: 4px 8px; font-size: 12px; }
+.ibpill .t { color: var(--muted); font-size: 11px; }
+.ibpill .s { color: var(--muted); }
+.ibpill.up b { color: var(--bull); } .ibpill.down b { color: var(--bear); } .ibpill.mixed b { color: var(--mixed); }
+.ibpill.up { background: var(--bull-bg); } .ibpill.down { background: var(--bear-bg); } .ibpill.mixed { background: var(--mixed-bg); }
+.ibpill.flip { border-color: var(--warn); }
+.ibpill .f { font-size: 9px; font-weight: 800; text-transform: uppercase; color: var(--warn); }
+.ibdetails summary { cursor: pointer; font-size: 12px; color: var(--accent); }

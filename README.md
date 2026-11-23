@@ -47,6 +47,8 @@ At 9:30 AM ET each trading day the app calls the day **Bullish**, **Bearish** or
 - **ntfy** (simplest): install the ntfy app, subscribe to a topic name only you know, and start the app with `SCREENER_NTFY_TOPIC=<that topic>`.
 - **Telegram**: create a bot with @BotFather, send it a message, and start the app with `SCREENER_TELEGRAM_TOKEN=<bot token>` and `SCREENER_TELEGRAM_CHAT_ID=<your chat id>`.
 
+**During the session**, on the hour from 10:00 AM to 4:00 PM ET, it reads the tape again (SPY against its opening range and VWAP, QQQ and IWM against VWAP, SPY from the open, SPY's 15-minute trend, breadth, VIX from its open, and the ES New York session) and shows the readings as a timeline on the card. The phone alert goes out only when the bias flips; `scripts/market-bias.sh --intraday` prints the latest hourly reading.
+
 "Send test alert" on the card checks the phone channels. `scripts/market-bias.sh` prints the call from the command line without starting the app (a scheduled Claude task uses it to send the call to the Claude app at 9:30 AM ET). After the close the app records SPY's open-to-close move and whether the call was right, and the card shows the hit rate.
 
 ## PV Confirm Signals

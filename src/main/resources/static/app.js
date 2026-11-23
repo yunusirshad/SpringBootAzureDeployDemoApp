@@ -475,6 +475,7 @@
     $('#biasBody').innerHTML = `
       <div class="biasbig ${cls}"><span class="biaslabel">${esc(r.bias.toUpperCase())}</span>
         <span class="biassub">${esc(r.summary)}${live ? '' : ' · preview'}</span></div>
+      ${intradayHtml(d, r)}
       <div class="biasgrid">
         <div class="tablewrap"><table class="grid"><thead><tr><th>Factor</th><th>Reading</th><th class="num">Points</th></tr></thead><tbody>${factors}</tbody></table></div>
         <div>
@@ -486,6 +487,26 @@
       </div>`;
   }
 
+  function intradayHtml(d, r) {
+    const list = (d.today && d.today.intraday) || [];
+    const now = d.intradayNow;
+    if (!list.length && !now) return '<p class="meta">Hourly session readings start at 10:00 AM ET.</p>';
+    const pill = (x, label, extra = '') => {
+      const c = x.bias === 'Bullish' ? 'up' : x.bias === 'Bearish' ? 'down' : 'mixed';
+      return `<div class="ibpill ${c}${x.flippedFrom ? ' flip' : ''}" title="${esc(x.summary)}${x.flippedFrom ? ' · flipped from ' + esc(x.flippedFrom) : ''}">
+        <span class="t">${esc(label)}</span><b>${esc(x.bias)}</b><span class="s">${x.score > 0 ? '+' : ''}${x.score}</span>${x.flippedFrom ? '<span class="f">flip</span>' : ''}${extra}</div>`;
+    };
+    const latest = now || list[list.length - 1];
+    const rows = (latest.factors || []).map((f) => `<tr><td>${esc(f.name)}</td><td>${esc(f.reading)}</td>
+      <td class="num"><b class="${f.points > 0 ? 'up' : f.points < 0 ? 'down' : 'muted'}">${f.points > 0 ? '+' : ''}${f.points}</b><span class="muted"> / ±${f.max}</span></td></tr>`).join('');
+    return `<div class="intraday">
+      <div class="muted small">During the session · on the hour, 10:00 AM–4:00 PM ET · a phone alert when it flips</div>
+      <div class="ibline">${pill(r, '9:30')}${list.map((x) => pill(x, x.time)).join('')}${now ? pill(now, 'now') : ''}</div>
+      <details class="ibdetails"><summary>${esc(now ? 'Now' : latest.time)}: ${esc(latest.summary)} — factors</summary>
+        <div class="tablewrap"><table class="grid"><thead><tr><th>Factor</th><th>Reading</th><th class="num">Points</th></tr></thead><tbody>${rows}</tbody></table></div></details>
+    </div>`;
+  }
+
   $('#biasRefresh').addEventListener('click', () => { $('#biasBody').insertAdjacentHTML('afterbegin', '<p class="muted small">Checking…</p>'); loadBias(true); });
   $('#biasTest').addEventListener('click', async () => {
     try { const r = await api('api/bias/test', { method: 'POST' }); toast(r.result.join(' · ')); } catch (err) { toast(err.message); }
@@ -494,8 +515,8 @@
   function handleBias(b) {
     if (!b) return;
     const seen = store.get('seenBias', '');
-    if (seen === b.date) return;
-    store.set('seenBias', b.date);
+    if (seen === b.id) return;
+    store.set('seenBias', b.id);
     toast(`${b.title} — ${b.summary}`);
     try { if ('Notification' in window && Notification.permission === 'granted') new Notification(b.title, { body: b.summary }); } catch { /* ignore */ }
     loadBias();
@@ -1018,7 +1039,8 @@
         <li><b>To breakout</b>: the distance to the higher of today's premarket high and the prior day's high.</li>
         <li><b>Bias</b>: close against a rising or falling 20 EMA on completed 15-minute, 1-hour and 4-hour candles. More up than down is Bullish, more down is Bearish, otherwise Mixed.</li>
         <li><b>Trend class</b> (the row colour): from completed daily candles, using the 20 EMA and the 50- and 200-day averages only. <b>Strong Uptrend</b>: 50-day above the 200-day, close above the 50-day and the 20 EMA. <b>Early Bullish Reversal</b>: the 50-day crossed above the 200-day in the last 15 sessions, or the close reclaimed the 50-day and a rising 20 EMA while the 50-day is still below the 200-day. <b>Early Bearish Reversal</b>: 50-day above the 200-day but the close lost the 50-day, or sits under a falling 20 EMA. <b>No Uptrend</b>: anything else; fewer than 200 daily candles means no structure, so it stays No Uptrend.</li>
-        <li><b>Market bias</b> (card at the top): at 9:30 AM ET each trading day the app calls the day Bullish, Bearish or Neutral and alerts in the page and, when set up, on your phone (Telegram or ntfy). Points: S&amp;P futures overnight from the prior 4:00 PM (±2 beyond 0.3%, ±1 beyond 0.1%), Nasdaq futures overnight (±1 beyond 0.3%), SPY's premarket gap (±1 beyond 0.25%), SPY against its 20-day EMA (±1), SPY's regime (+1 above its SMA200 with SMA50 over SMA200, −1 below its SMA200), SPY's 5-day change (±1 beyond 1%), VIX (−1 above 25 or 10% over its 10-day average; +1 under 16 and falling), and the ES London and Asia session phases from the Sessions indicator (±1 for a Bull or Bear phase of 60% or more). +2 or more is Bullish, −2 or less Bearish, else Neutral with its lean; 6+ is strong, 4–5 moderate. After the close it records SPY's open-to-close move and whether the call was right. Before 9:30 the card shows a preview.</li>
+        <li><b>Market bias</b> (card at the top): at 9:30 AM ET each trading day the app calls the day Bullish, Bearish or Neutral and alerts in the page and, when set up, on your phone (Telegram or ntfy). Points: S&amp;P futures overnight from the prior 4:00 PM (±2 beyond 0.3%, ±1 beyond 0.1%), Nasdaq futures overnight (±1 beyond 0.3%), SPY's premarket gap (±1 beyond 0.25%), SPY against its 20-day EMA (±1), SPY's regime (+1 above its SMA200 with SMA50 over SMA200, −1 below its SMA200), SPY's 5-day change (±1 beyond 1%), VIX (−1 above 25 or 10% over its 10-day average; +1 under 16 and falling), and the ES London and Asia session phases from the Sessions indicator (±1 for a Bull or Bear phase of 60% or more). +2 or more is Bullish, −2 or less Bearish, else Neutral with its lean; 6+ is strong, 4–5 moderate. After the close it records SPY's open-to-close move and whether the call was right. Before 9:30 the card shows a preview.
+          <b>During the session</b>, on the hour from 10:00 AM to 4:00 PM ET, it reads the tape again (±10): SPY against its opening range, the first 30 minutes (±2); SPY, QQQ and IWM against today's VWAP (±1 each); SPY from the open beyond 0.3% (±1); SPY's 15-minute close against a rising or falling 20 EMA (±1); breadth on Nasdaq + NYSE, 1.5 up per down or better / 0.67 or worse (±1); VIX against its own open beyond 5% (±1); and the ES New York session phase (±1). The 9:30 call stays as it was; the hourly readings show as a timeline on the card, and the phone alert goes out only when the bias flips.</li>
         <li><b>PV Confirm Signals</b>: nested under the trend check (SMA50 above SMA200, unchanged), on daily bars, long only.
           <b>Uptrend</b>: the four rules are close above SMA200, SPY above its SMA200, RSI(2) under 10 and volume under its 50-day average (the average includes the day). All four on a completed bar is a <b>BUY</b>; the trade enters at the next open, with the stop at entry − 2.5 × ATR(14) of the signal bar. <b>IN TRADE</b> until the first exit, checked on each completed bar from the entry bar on: <b>STOP</b> when the low touches the stop (filled at the stop, or the open on a gap below), <b>TAKE PROFIT</b> on the first close above the entry, <b>TIME EXIT</b> at the close of the 10th bar. The bar it exits on shows <b>SELL</b> with the reason; when a new BUY fires on the same bar, the SELL shows first and the note says so. <b>READY TO BUY</b>: the other three rules pass and RSI(2) is under 20 but not yet under 10. WAIT and READY TO BUY show the <b>expected buy</b> (the highest next close that would put RSI(2) under 10, solved from the Wilder averages; today's close when RSI(2) is already there), the expected stop (that − 2.5 × ATR) and an expected target (the 5-day average including that close, where an RSI(2) dip usually reverts; the trade itself still exits on the first close above the entry). <b>Near Setup</b>: 3 of the 4 rules pass while flat. Everything else is <b>WAIT</b>.
           <b>Downtrend</b>: no new entries, shown as N/A – Downtrend. A trade opened in the uptrend is still tracked to its SELL after the flip, and stays listed even if the name drops off the screen.
