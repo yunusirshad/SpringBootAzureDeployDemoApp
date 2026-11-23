@@ -1,5 +1,7 @@
 package com.personalscreener.service;
 
+import com.personalscreener.analysis.SessionPhases;
+import com.personalscreener.analysis.TrendClassifier;
 import com.personalscreener.analysis.Indicators;
 import com.personalscreener.analysis.QualityScorer;
 import com.personalscreener.analysis.StateClassifier;
@@ -59,6 +61,10 @@ public class StockAnalyzer {
             row.smaGapPct = null;
             row.uptrend = false;
         }
+        TrendClassifier.Result tc = TrendClassifier.classify(cl);
+        row.trendClass = tc.trendClass();
+        row.trendClassWhy = tc.why();
+        row.ema20d = Num.round(tc.ema20(), 4);
         row.rsi = Num.round(Indicators.rsi(cl, 14), 1);
         Indicators.Macd m = Indicators.macd(cl);
         row.macd = Num.round(m.line(), 4);
@@ -99,6 +105,8 @@ public class StockAnalyzer {
         row.bias = sum > 0 ? "Bullish" : sum < 0 ? "Bearish" : "Mixed";
         row.trendNote = "Trend: " + (m15.size() + h1.size() + h4.size()) + " completed candles"
                 + (h1.isEmpty() ? "" : " · last 1h " + hhmm(h1.get(h1.size() - 1).time() + 3600));
+
+        readSession(row, c.symbol(), nowSec);
 
         if (h1.size() >= 120) {
             var qs = com.personalscreener.analysis.QuantumShift.compute(h1, 60);
@@ -184,6 +192,33 @@ public class StockAnalyzer {
         if (last > ema && ema >= prev) return 1;
         if (last < ema && ema <= prev) return -1;
         return 0;
+    }
+
+    /**
+     * The latest session's phase from the Sessions indicator (5-minute candles with pre-market). A live session
+     * counts once it has 30 minutes of candles; before that the last finished session is used. Stocks have no
+     * Asia session, so this is pre-market (London hours) or New York.
+     */
+    private void readSession(StockRow row, String symbol, long nowSec) {
+        try {
+            List<Bar> base = yahoo.chart(symbol, "5m", "1mo", true).bars();
+            List<SessionPhases.Session> all = SessionPhases.read(base, nowSec, true);
+            SessionPhases.Session s = null;
+            for (int i = all.size() - 1; i >= 0 && s == null; i--) {
+                SessionPhases.Session x = all.get(i);
+                if (!x.live() || x.bars() >= 6) s = x;
+            }
+            if (s == null) return;
+            row.sessionName = s.session();
+            row.sessionDate = s.tradeDate().toString();
+            row.sessionLive = s.live();
+            row.sessionPhase = s.label();
+            row.sessionPct = s.pct();
+            row.sessionScores = "Acc " + s.accumulation().pct() + "% · Man " + s.manipulation().pct()
+                    + "% · Abs " + s.absorption().pct() + "% · Dist " + s.distribution().pct() + "%";
+        } catch (Exception e) {
+            row.sessionPhase = null;
+        }
     }
 
     static List<Bar> completed(List<Bar> bars, long seconds, long nowSec) {

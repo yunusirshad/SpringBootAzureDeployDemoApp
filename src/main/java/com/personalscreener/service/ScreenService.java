@@ -2,6 +2,8 @@ package com.personalscreener.service;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.personalscreener.analysis.GexCalculator;
+import com.personalscreener.analysis.LongScore;
+import com.personalscreener.analysis.TrendClassifier;
 import com.personalscreener.analysis.Indicators;
 import com.personalscreener.config.ScreenerProperties;
 import com.personalscreener.data.*;
@@ -46,6 +48,10 @@ public class ScreenService {
     private final ExecutorService pool = Executors.newFixedThreadPool(6);
     private final AtomicBoolean running = new AtomicBoolean(false);
     private final Map<String, GexLevels> gexCache;
+    /** The day each name's chain was last asked for, so a name with no options is tried once a day, not every run. */
+    private final Map<String, LocalDate> chainTried = new ConcurrentHashMap<>();
+    /** Open interest is summed over the expiries in the next 45 days (at most 8). */
+    static final int CHAIN_DAYS = 45, CHAIN_MAX_EXPIRIES = 8;
     private final List<Alert> recentlyRang = new CopyOnWriteArrayList<>();
     private volatile Snapshot snapshot;
     private volatile Instant lastTick = Instant.EPOCH;
@@ -87,11 +93,12 @@ public class ScreenService {
         if (clock.inRefreshWindow()) refresh(false);
     }
 
-    /** Option chains once a day at 8:00 AM ET. */
+    /** Option chains for every name at 8:00 AM ET each weekday, after the overnight open-interest update. */
     @Scheduled(cron = "0 0 8 * * MON-FRI", zone = "America/New_York")
     public void scheduledChains() {
         refreshChains(snapshot.rows.stream().map(r -> r.symbol).toList());
         rebuild(snapshot);
+        store.write(SNAPSHOT, snapshot);
     }
 
     /** Price every 10 seconds while the extended session is open; once every 5 minutes otherwise. */
@@ -199,7 +206,10 @@ public class ScreenService {
             }
 
             // 5. chains
-            if (withChains || gexCache.isEmpty()) refreshChains(s.rows.stream().map(r -> r.symbol).toList());
+            // every name gets a chain once a day: new names on the screen run they first appear,
+            // the rest at 8:00 AM ET (or now, if today's chain is still missing)
+            List<String> all = s.rows.stream().map(r -> r.symbol).toList();
+            refreshChains(withChains ? all : chainsDue(all));
             s.lastChainRun = lastChainRun;
             s.pulse = pulse();
             lastPulse = Instant.now();
@@ -256,28 +266,43 @@ public class ScreenService {
             r.gex = gexCache.get(r.symbol);
             r.userAdded = watchlist.contains(r.symbol);
         }
-        List<StockRow> uptrend = s.rows.stream().filter(r -> r.uptrend && (r.screenPass || r.userAdded))
-                .sorted(Comparator.comparingDouble((StockRow r) -> -Num.d(r.smaGapPct))).toList();
+        // Core: every screened or added name with a trend to trade (not No Uptrend), sorted by the latest
+        // session's phase (Bull Distribution, Absorption, Bull Manipulation, Bull Accumulation, then the rest),
+        // then that phase's percent, then the long score
         for (StockRow r : s.rows) {
+            LongScore.Result ls = LongScore.of(r);
+            r.longScore = ls.score();
+            r.longScoreParts = ls.parts();
+            r.sessionGroup = sessionGroup(r.sessionPhase);
             r.list = r.userAdded ? "NO_UPTREND" : "SCREEN_ONLY";
             r.rank = 0;
         }
-        for (int i = 0; i < uptrend.size(); i++) {
-            StockRow r = uptrend.get(i);
-            r.list = i < 10 ? "TOP" : "CORE";
-            r.rank = i + 1;
+        List<StockRow> core = s.rows.stream()
+                .filter(r -> (r.screenPass || r.userAdded) && !TrendClassifier.NONE.equals(r.trendClass))
+                .sorted(Comparator.comparingInt((StockRow r) -> r.sessionGroup)
+                        .thenComparingInt(r -> r.sessionPct == null ? 0 : -r.sessionPct)
+                        .thenComparingInt(r -> -r.longScore)
+                        .thenComparingDouble(r -> -Num.d(r.smaGapPct)))
+                .toList();
+        for (int i = 0; i < core.size(); i++) {
+            core.get(i).list = "CORE";
+            core.get(i).rank = i + 1;
         }
-        // super core: the ready name closest to its breakout
-        uptrend.stream().filter(ScreenService::ready)
-                .min(Comparator.comparingDouble(r -> Math.max(0, Num.d(r.toBreakoutPct))))
-                .ifPresent(r -> r.list = "SUPER");
         s.compliant = (int) s.rows.stream().filter(r -> r.screenPass && "COMPLIANT".equals(r.zoya)).count();
         s.chainsAvailable = !gexCache.isEmpty();
     }
 
-    static boolean ready(StockRow r) {
-        return "COMPLIANT".equals(r.zoya) && r.above1hEma && Num.d(r.relVol) >= 1.0
-                && !r.earningsSoon && r.qualityPass && r.toBreakoutPct != null;
+    /** Sort order of a session phase label such as "Bull Distribution". */
+    static int sessionGroup(String phase) {
+        if (phase == null) return 9;
+        return switch (phase) {
+            case "Bull Distribution" -> 1;
+            case "Bull Absorption" -> 2;
+            case "Bear Absorption" -> 3;
+            case "Bull Manipulation" -> 4;
+            case "Bull Accumulation" -> 5;
+            default -> 9;
+        };
     }
 
     List<String> failures(Candidate c, boolean haveFundamentals) {
@@ -335,15 +360,26 @@ public class ScreenService {
 
     // ---- chains ----------------------------------------------------------------------------
 
+    /** Names with no chain read today that have not been tried today either. */
+    List<String> chainsDue(List<String> symbols) {
+        LocalDate today = clock.now().toLocalDate();
+        return symbols.stream().filter(sym -> {
+            GexLevels g = gexCache.get(sym);
+            return (g == null || !today.equals(g.asOf())) && !today.equals(chainTried.get(sym));
+        }).toList();
+    }
+
     public void refreshChains(List<String> symbols) {
+        if (symbols.isEmpty()) return;
         int found = 0;
         LocalDate today = clock.now().toLocalDate();
         for (String s : symbols) {
-            OptionChain ch = yahoo.optionChain(s);
-            if (ch == null) continue;
+            chainTried.put(s, today);
+            List<OptionChain> chains = yahoo.optionChains(s, CHAIN_DAYS, CHAIN_MAX_EXPIRIES);
+            if (chains.isEmpty()) continue;
             StockRow r = snapshot.rows.stream().filter(x -> x.symbol.equals(s)).findFirst().orElse(null);
-            double spot = r != null && r.price != null ? r.price : ch.spot();
-            GexLevels g = GexCalculator.compute(ch, spot, today);
+            double spot = r != null && r.price != null ? r.price : chains.get(0).spot();
+            GexLevels g = GexCalculator.compute(chains, spot, today);
             if (g != null) { gexCache.put(s, g); found++; }
         }
         lastChainRun = OffsetDateTime.now().toString();

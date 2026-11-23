@@ -8,9 +8,12 @@ import java.util.List;
 public class StockRow {
     public String symbol, exchange, name;
     public boolean userAdded;
-    /** SUPER, TOP, CORE, NO_UPTREND, SCREEN_ONLY */
+    /** CORE, NO_UPTREND, SCREEN_ONLY */
     public String list;
     public int rank;
+    /** 0-100, how good a long it is; the Core list is sorted by it. */
+    public int longScore;
+    public List<String> longScoreParts = new ArrayList<>();
 
     // screen
     public boolean screenPass;
@@ -37,6 +40,10 @@ public class StockRow {
     // daily trend
     public Double sma50, sma200, smaGapPct;
     public boolean uptrend;
+    /** STRONG_UPTREND, EARLY_BULLISH_REVERSAL, EARLY_BEARISH_REVERSAL or NO_UPTREND, from completed daily candles. */
+    public String trendClass = "NO_UPTREND";
+    public String trendClassWhy;
+    public Double ema20d;
     public Double rsi, macd, macdSignal, adx, plusDi, minusDi, stoch, bandPct;
     public boolean macdUp, adxRising;
     /** Long when the positive direction leads (ADX rising), Short otherwise. */
@@ -50,6 +57,13 @@ public class StockRow {
     public int trend15m, trend1h, trend4h;
     public String bias;
     public String trendNote;
+
+    // session phase (latest pre-market or New York session, from the Sessions indicator)
+    public String sessionName, sessionDate, sessionPhase, sessionScores;
+    public Integer sessionPct;
+    public boolean sessionLive;
+    /** 1 Bull Distribution, 2 Bull Absorption, 3 Bear Absorption, 4 Bull Manipulation, 5 Bull Accumulation, 9 anything else. */
+    public int sessionGroup = 9;
 
     // quantum shift (1h)
     public Double qsEnergy;

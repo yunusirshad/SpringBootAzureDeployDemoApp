@@ -5,49 +5,82 @@ import com.personalscreener.model.GexLevels;
 
 import java.time.LocalDate;
 import java.time.temporal.ChronoUnit;
+import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
 
 /**
- * Call wall: the call strike with the most open interest. Put wall: the put strike with the most.
- * King: the strike with the largest absolute net gamma exposure (calls positive, puts negative).
- * Each percent is that strike's share of all open interest on the expiry.
+ * GEX levels from one or more expiries. Open interest is summed by strike across all of them, so a big monthly
+ * position is not hidden by a quiet weekly.
+ * <ul>
+ *   <li>Call wall: the strike with the most call open interest.</li>
+ *   <li>Put wall: the strike with the most put open interest.</li>
+ *   <li>King: the strike with the largest absolute net gamma exposure (calls positive, puts negative).</li>
+ * </ul>
+ * A tie on open interest goes to the strike nearer the spot. Each percent is that strike's share of all open
+ * interest in the window.
  */
 public final class GexCalculator {
 
     private GexCalculator() {}
 
     public static GexLevels compute(OptionChain ch, double spot, LocalDate today) {
-        if (ch == null || (ch.calls().isEmpty() && ch.puts().isEmpty())) return null;
-        double s = spot > 0 ? spot : ch.spot();
-        double t = Math.max(1, ChronoUnit.DAYS.between(today, ch.expiry())) / 365.0;
+        return ch == null ? null : compute(List.of(ch), spot, today);
+    }
+
+    public static GexLevels compute(List<OptionChain> chains, double spot, LocalDate today) {
+        if (chains == null || chains.isEmpty()) return null;
+        double s = spot > 0 ? spot : chains.get(0).spot();
+        Map<Double, Double> callByStrike = new TreeMap<>(), putByStrike = new TreeMap<>(), gexByStrike = new TreeMap<>();
+        Map<LocalDate, Double> oiByExpiry = new TreeMap<>();
         double callOi = 0, putOi = 0;
-        Map<Double, Double> oiByStrike = new TreeMap<>(), gexByStrike = new TreeMap<>();
-        OptionChain.Strike callWall = null, putWall = null;
-        for (OptionChain.Strike c : ch.calls()) {
-            callOi += c.openInterest();
-            oiByStrike.merge(c.strike(), c.openInterest(), Double::sum);
-            gexByStrike.merge(c.strike(), gex(c, s, t), Double::sum);
-            if (callWall == null || c.openInterest() > callWall.openInterest()) callWall = c;
-        }
-        for (OptionChain.Strike p : ch.puts()) {
-            putOi += p.openInterest();
-            oiByStrike.merge(p.strike(), p.openInterest(), Double::sum);
-            gexByStrike.merge(p.strike(), -gex(p, s, t), Double::sum);
-            if (putWall == null || p.openInterest() > putWall.openInterest()) putWall = p;
+        LocalDate last = null;
+        for (OptionChain ch : chains) {
+            double t = Math.max(1, ChronoUnit.DAYS.between(today, ch.expiry())) / 365.0;
+            double expOi = 0;
+            for (OptionChain.Strike c : ch.calls()) {
+                callOi += c.openInterest();
+                expOi += c.openInterest();
+                callByStrike.merge(c.strike(), c.openInterest(), Double::sum);
+                gexByStrike.merge(c.strike(), gex(c, s, t), Double::sum);
+            }
+            for (OptionChain.Strike p : ch.puts()) {
+                putOi += p.openInterest();
+                expOi += p.openInterest();
+                putByStrike.merge(p.strike(), p.openInterest(), Double::sum);
+                gexByStrike.merge(p.strike(), -gex(p, s, t), Double::sum);
+            }
+            oiByExpiry.merge(ch.expiry(), expOi, Double::sum);
+            if (last == null || ch.expiry().isAfter(last)) last = ch.expiry();
         }
         double total = callOi + putOi;
         if (total <= 0) return null;
+
+        double[] cw = wall(callByStrike, s), pw = wall(putByStrike, s);
         double king = Double.NaN, best = -1;
         for (var e : gexByStrike.entrySet()) {
-            if (Math.abs(e.getValue()) > best) { best = Math.abs(e.getValue()); king = e.getKey(); }
+            double a = Math.abs(e.getValue());
+            if (a > best || (a == best && Math.abs(e.getKey() - s) < Math.abs(king - s))) { best = a; king = e.getKey(); }
         }
+        double kingOi = callByStrike.getOrDefault(king, 0.0) + putByStrike.getOrDefault(king, 0.0);
+        LocalDate mainExpiry = oiByExpiry.entrySet().stream().max(Map.Entry.comparingByValue()).map(Map.Entry::getKey).orElse(null);
         double netGex = gexByStrike.values().stream().mapToDouble(Double::doubleValue).sum();
-        return new GexLevels(ch.expiry(),
-                callWall == null ? Double.NaN : callWall.strike(), callWall == null ? Double.NaN : 100 * callWall.openInterest() / total,
-                king, 100 * oiByStrike.getOrDefault(king, 0.0) / total,
-                putWall == null ? Double.NaN : putWall.strike(), putWall == null ? Double.NaN : 100 * putWall.openInterest() / total,
-                total, callOi, putOi, putOi > 0 ? callOi / putOi : Double.NaN, netGex);
+        return new GexLevels(mainExpiry,
+                cw[0], 100 * cw[1] / total, cw[1],
+                king, 100 * kingOi / total,
+                pw[0], 100 * pw[1] / total, pw[1],
+                total, callOi, putOi, putOi > 0 ? callOi / putOi : Double.NaN, netGex,
+                today, chains.size(), last);
+    }
+
+    /** {strike, open interest} of the strike with the most open interest; NaN when none has any. */
+    static double[] wall(Map<Double, Double> oiByStrike, double spot) {
+        double strike = Double.NaN, oi = 0;
+        for (var e : oiByStrike.entrySet()) {
+            double v = e.getValue();
+            if (v > oi || (v == oi && v > 0 && Math.abs(e.getKey() - spot) < Math.abs(strike - spot))) { oi = v; strike = e.getKey(); }
+        }
+        return new double[]{strike, oi};
     }
 
     /** Dollar gamma for a 1% move: gamma x OI x 100 x S^2 x 0.01. */

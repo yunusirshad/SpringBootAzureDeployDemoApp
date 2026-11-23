@@ -146,19 +146,44 @@ public class YahooClient {
 
     /** Nearest listed expiry with open interest by strike, or null. */
     public OptionChain optionChain(String symbol) {
+        List<OptionChain> all = optionChains(symbol, 0, 1);
+        return all.isEmpty() ? null : all.get(0);
+    }
+
+    /**
+     * Every listed expiry from today out to {@code maxDays} days (at least the nearest one), up to
+     * {@code maxExpiries}, each with open interest by strike. Empty when the chain cannot be read.
+     */
+    public List<OptionChain> optionChains(String symbol, int maxDays, int maxExpiries) {
+        List<OptionChain> out = new ArrayList<>();
         try {
             JsonNode root = crumbGet("/v7/finance/options/" + enc(symbol));
-            if (root == null) return null;
+            if (root == null) return out;
             JsonNode res = root.path("optionChain").path("result").path(0);
-            JsonNode opt = res.path("options").path(0);
-            if (opt.isMissingNode() || !opt.has("expirationDate")) return null;
-            LocalDate exp = Instant.ofEpochSecond(opt.get("expirationDate").asLong()).atZone(ZoneOffset.UTC).toLocalDate();
             double spot = Http.num(res.path("quote"), "regularMarketPrice");
-            return new OptionChain(symbol, exp, spot, strikes(opt.path("calls")), strikes(opt.path("puts")));
+            JsonNode first = res.path("options").path(0);
+            if (first.isMissingNode() || !first.has("expirationDate")) return out;
+            long firstExp = first.get("expirationDate").asLong();
+            out.add(chain(symbol, spot, first));
+            long limit = Instant.now().getEpochSecond() + maxDays * 86_400L;
+            for (JsonNode d : res.path("expirationDates")) {
+                long exp = d.asLong();
+                if (exp == firstExp) continue;
+                if (out.size() >= maxExpiries || exp > limit) break;
+                JsonNode more = crumbGet("/v7/finance/options/" + enc(symbol) + "?date=" + exp);
+                if (more == null) break;
+                JsonNode opt = more.path("optionChain").path("result").path(0).path("options").path(0);
+                if (opt.has("expirationDate")) out.add(chain(symbol, spot, opt));
+            }
         } catch (Exception e) {
             log.debug("Yahoo options failed for {}: {}", symbol, e.getMessage());
-            return null;
         }
+        return out;
+    }
+
+    private static OptionChain chain(String symbol, double spot, JsonNode opt) {
+        LocalDate exp = Instant.ofEpochSecond(opt.get("expirationDate").asLong()).atZone(ZoneOffset.UTC).toLocalDate();
+        return new OptionChain(symbol, exp, spot, strikes(opt.path("calls")), strikes(opt.path("puts")));
     }
 
     private static List<OptionChain.Strike> strikes(JsonNode arr) {

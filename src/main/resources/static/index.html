@@ -51,7 +51,8 @@
       <option>Bear initiation</option><option>Bear distribution</option><option>Bear manipulation</option>
     </select>
     <select id="sortBy" aria-label="Sort">
-      <option value="screen">Sort: screen</option>
+      <option value="screen">Sort: session phase</option>
+      <option value="long">Sort: long score</option>
       <option value="quality">Sort: quality</option>
       <option value="breakout">Sort: closest to breakout</option>
       <option value="change">Sort: from yesterday</option>
@@ -65,30 +66,19 @@
     <div class="card-head">
       <h2>GEX levels</h2>
       <div class="gexfilters">
-        <select id="gexState" aria-label="State"><option value="">Any state</option><option value="Bull" selected>Bull</option><option value="Bear">Bear</option></select>
-        <select id="gexBias" aria-label="Bias"><option value="">Any bias</option><option selected>Bullish</option><option>Bearish</option><option>Mixed</option></select>
-        <select id="gexSide" aria-label="Side"><option value="">Any side</option><option selected>Long</option><option>Short</option></select>
+        <select id="gexState" aria-label="State"><option value="" selected>Any state</option><option value="Bull">Bull</option><option value="Bear">Bear</option></select>
+        <select id="gexBias" aria-label="Bias"><option value="" selected>Any bias</option><option>Bullish</option><option>Bearish</option><option>Mixed</option></select>
+        <select id="gexSide" aria-label="Side"><option value="" selected>Any side</option><option>Long</option><option>Short</option></select>
       </div>
     </div>
-    <p class="sub">Next listed expiry. The percent is that strike's share of open interest on the expiry, which is the pull toward the level. It is not a forecast.</p>
+    <p class="sub">Every listed stock, from its option chain, read once a day. Open interest is summed by strike over the expiries in the next 45 days. Call wall and put wall are the strikes with the most call and put open interest; King is the strike with the largest net gamma. Each level shows its open interest and its share of the total. Expiry is the date holding the most open interest. It is not a forecast.</p>
+    <div class="legend trendlegend"><span class="tc STRONG_UPTREND">Strong Uptrend</span><span class="tc EARLY_BULLISH_REVERSAL">Early Bullish Reversal</span><span class="tc EARLY_BEARISH_REVERSAL">Early Bearish Reversal</span><span class="tc NO_UPTREND">No Uptrend</span></div>
     <div class="tablewrap"><table class="grid" id="gexTable"></table></div>
-  </div>
-
-  <div class="card super">
-    <div class="card-head"><h2>Super core stock <span class="count" id="superCount">0</span></h2></div>
-    <p class="sub">The one name to buy. It has to be compliant, above the 1-hour 20 EMA, at least 1× relative volume, outside 3 days of earnings, and a quality pass. The closest to the breakout wins.</p>
-    <div id="superBody"></div>
-  </div>
-
-  <div class="card">
-    <div class="card-head"><h2>Top 10 stocks <span class="count" id="topCount">0</span></h2></div>
-    <p class="sub">The 10 strongest uptrends. A name qualifies only when the 50-day average is above the 200-day. Rank is that gap as a percent of the 200-day.</p>
-    <div class="tablewrap"><table class="grid" id="topTable"></table></div>
   </div>
 
   <div class="card">
     <div class="card-head"><h2>Core stocks <span class="count" id="coreCount">0</span></h2></div>
-    <p class="sub">Every other name that qualifies. A name with the 50-day at or below the 200-day is left off both lists until it qualifies.</p>
+    <p class="sub">Every name that passes the screen and has a trend to trade (Strong Uptrend, Early Bullish Reversal or Early Bearish Reversal), with no limit on how many. Sorted by the latest session's phase from the Sessions indicator: Bull Distribution first, then Absorption (bull, then bear), Bull Manipulation, Bull Accumulation, then everything else. Within a phase, the higher phase percent goes first, then the higher long score (trend class, 15m/1h/4h bias, 1h 20 EMA, +DI over −DI, MACD, RSI, quality, relative volume, Zoya, room to the call wall, earnings). Names you added that have no uptrend sit underneath.</p>
     <form id="addForm" class="addrow">
       <input id="addInput" placeholder="Ticker" aria-label="Ticker" autocomplete="off">
       <button type="submit">Add</button>

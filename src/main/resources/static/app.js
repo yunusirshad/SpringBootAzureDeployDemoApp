@@ -31,6 +31,7 @@
   const etTime = (iso) => iso ? new Date(iso).toLocaleTimeString('en-US', { timeZone: 'America/New_York', hour: 'numeric', minute: '2-digit', second: '2-digit' }) : '—';
   const etStamp = (iso) => iso ? new Date(iso).toLocaleString('en-US', { timeZone: 'America/New_York', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) + ' ET' : '—';
   const arrow = (t) => t > 0 ? '↑' : t < 0 ? '↓' : '–';
+  const TREND = { STRONG_UPTREND: 'Strong Uptrend', EARLY_BULLISH_REVERSAL: 'Early Bullish Reversal', EARLY_BEARISH_REVERSAL: 'Early Bearish Reversal', NO_UPTREND: 'No Uptrend' };
   const zoyaLabel = { COMPLIANT: 'Compliant', NON_COMPLIANT: 'Not compliant', QUESTIONABLE: 'Questionable', NOT_COVERED: 'Not covered', NOT_CHECKED: 'Not checked' };
 
   async function api(path, opts = {}) {
@@ -102,6 +103,7 @@
     const v = (x) => isNum(x) ? x : -Infinity;
     const cmp = {
       screen: (a, b) => (a.rank || 999) - (b.rank || 999),
+      long: (a, b) => (b.longScore || 0) - (a.longScore || 0) || (a.rank || 999) - (b.rank || 999),
       quality: (a, b) => b.qualityScore - a.qualityScore,
       breakout: (a, b) => (isNum(a.toBreakoutPct) ? Math.max(0, a.toBreakoutPct) : 1e9) - (isNum(b.toBreakoutPct) ? Math.max(0, b.toBreakoutPct) : 1e9),
       change: (a, b) => v(b.changePct) - v(a.changePct),
@@ -122,45 +124,30 @@
     $('#statusLine').title = `${s.screened ?? 0} names from ${s.screenSource || '—'}; ${s.passedFilters ?? 0} passed every filter. Session: ${data.session}.`;
     const note = [];
     if (s.screenNote) note.push(s.screenNote);
-    if (!s.zoyaConfigured) note.push('Zoya is set to the API (ZOYA_SOURCE=api) but ZOYA_API_KEY is empty, so every name shows "Not checked" and no name can be the super core.');
+    if (!s.zoyaConfigured) note.push('Zoya is set to the API (ZOYA_SOURCE=api) but ZOYA_API_KEY is empty, so every name shows "Not checked".');
     $('#screenNote').textContent = note.join(' ');
     $('#screenNote').classList.toggle('hidden', note.length === 0);
     renderPulse(s.pulse);
 
     const vis = visible(rows);
-    const top = sorted(vis.filter((r) => r.list === 'TOP' || (r.list === 'SUPER' && r.rank <= 10)));
-    const core = sorted(vis.filter((r) => r.list === 'CORE' || (r.list === 'SUPER' && r.rank > 10)));
-    const superRow = rows.find((r) => r.list === 'SUPER');
-    $('#topCount').textContent = top.length;
+    const core = sorted(vis.filter((r) => r.list === 'CORE'));
     $('#coreCount').textContent = core.length;
-    $('#superCount').textContent = superRow ? 1 : 0;
 
     // GEX levels: every listed name, narrowed by state / bias / side
     const gs = $('#gexState').value, gb = $('#gexBias').value, gd = $('#gexSide').value;
-    const gex = sorted(vis.filter((r) => ['TOP', 'CORE', 'SUPER'].includes(r.list))
+    const gex = sorted(vis.filter((r) => r.list === 'CORE')
       .filter((r) => (!gs || (r.state || '').startsWith(gs)) && (!gb || r.bias === gb) && (!gd || r.side === gd)));
     $('#gexTable').innerHTML = table(gex, false, 'No names match this state, bias, or side.');
 
-    $('#superBody').innerHTML = superRow ? superHtml(superRow) : `<p class="muted">${esc(superWhy(rows))}</p>`;
-    $('#topTable').innerHTML = table(top, true, 'No uptrends yet.');
-    $('#coreTable').innerHTML = table(core, true, 'No other names qualify.');
+    $('#coreTable').innerHTML = table(core, true, 'No names qualify yet.');
 
     const noUp = rows.filter((r) => r.userAdded && r.list === 'NO_UPTREND');
     const wlMissing = (data.watchlist || []).filter((t) => !rows.some((r) => r.symbol === t));
-    $('#noUptrend').innerHTML = noUp.map((r) => `<div class="item"><span class="tkr">${esc(r.symbol)}</span>
+    $('#noUptrend').innerHTML = noUp.map((r) => `<div class="item"><a href="#" class="tkr" data-ses="${esc(r.symbol)}">${esc(r.symbol)}</a>
         <span class="why">${r.error ? esc(r.error) : 'No uptrend, so it stays off both lists'}</span>
         <button class="ghost small" data-remove="${esc(r.symbol)}">Remove</button></div>`).join('')
       + wlMissing.map((t) => `<div class="item"><span class="tkr">${esc(t)}</span><span class="why">Waiting for the next screen</span>
         <button class="ghost small" data-remove="${esc(t)}">Remove</button></div>`).join('');
-  }
-
-  function superWhy(rows) {
-    const listed = rows.filter((r) => ['TOP', 'CORE'].includes(r.list));
-    if (!listed.length) return 'None of the core names are ready.';
-    const n = (f) => listed.filter(f).length;
-    return `None of the core names are ready. Of ${listed.length}: ${n((r) => r.zoya === 'COMPLIANT')} compliant, `
-      + `${n((r) => r.above1hEma)} above the 1h 20 EMA, ${n((r) => r.relVol >= 1)} at 1× relative volume or more, `
-      + `${n((r) => !r.earningsSoon)} clear of earnings, ${n((r) => r.qualityPass)} quality passes.`;
   }
 
   function renderChips(f) {
@@ -214,8 +201,7 @@
         <div><small>Next earnings</small><b>${r.earningsSoon ? '<span class="down">Skip</span>' : esc(r.earningsDate || '—')}</b><small>${r.earningsDate ? (r.earningsSoon ? esc(r.earningsDate) + ' · inside 3 days' : 'outside 3 days') : 'no date'}</small></div>
         <div><small>To breakout</small><b>${isNum(r.toBreakoutPct) ? (r.toBreakoutPct <= 0 ? 'Broken out' : signed(r.toBreakoutPct)) : '—'}</b><small>${esc(r.breakoutSource || 'premarket or prior high')}</small></div>
       </div>
-      <div class="extra">${r.uptrend ? 'Uptrend' : 'No uptrend'} ${signed(r.smaGapPct)} · 50-day ${r.uptrend ? 'above' : 'at or below'} 200-day</div>
-      <div class="extra">RSI ${fix(r.rsi, 0)}${r.rsi < 30 ? ' washed' : r.rsi > 70 ? ' stretched' : ''} · MACD ${r.macdUp ? 'up' : 'down'} · ADX ${fix(r.adx, 0)} ${r.adxRising ? 'rising' : 'falling'} · Stoch ${fix(r.stoch, 0)} · Band ${fix(r.bandPct, 0)}%</div>
+      <div class="extra">${esc(TREND[r.trendClass] || 'No Uptrend')}: ${esc(r.trendClassWhy || 'no structure')} · 50-day ${r.uptrend ? 'above' : 'at or below'} 200-day by ${signed(r.smaGapPct)} · 20 EMA ${money(r.ema20d)}</div>
       <div class="extra">Quantum Shift 1h · energy ${fix(r.qsEnergy, 0)} · regime ${r.qsRegime > 0 ? '<span class="up">up</span>' : r.qsRegime < 0 ? '<span class="down">down</span>' : 'neutral'}${r.qsLastSignal ? ' · ' + esc(r.qsLastSignal) : ''}</div>
       <div class="extra">${esc(r.trendNote || '')}</div>
       ${r.screenFails?.length ? `<div class="extra warnline">Screen: ${esc(r.screenFails.join(', '))}</div>` : ''}
@@ -230,14 +216,27 @@
 
     const dir = (r.state || '').split(' ')[0];
     const g = r.gex;
-    const lvl = (v, p) => isNum(v) ? `${money(v)}<span class="pct">${fix(p, 0)}%</span>` : '—';
+    const lvl = (v, p, oi) => isNum(v) ? `${money(v)}<span class="pct">${isNum(oi) && oi > 0 ? big(oi) + ' OI · ' : ''}${fix(p, 0)}%</span>` : '—';
+    const today = new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
+    const expiry = g ? `${esc(g.expiry || '—')}<span class="pct">${g.expiries > 1 ? g.expiries + ' expiries' : '1 expiry'}${g.asOf ? ' · ' + (g.asOf === today ? 'today' : '<span class="warnline">as of ' + esc(g.asOf) + '</span>') : ''}</span>` : 'No chain';
     const biasCls = r.bias === 'Bullish' ? 'bull' : r.bias === 'Bearish' ? 'bear' : 'mixed';
     const book = g ? `book ${big(g.totalOi)} · calls ${big(g.callOi)} · puts ${big(g.putOi)} · L/S ${fix(g.callPutRatio)}` : 'book – · calls – · puts – · L/S –';
-    return `<tr data-symbol="${esc(r.symbol)}">
+    return `<tr data-symbol="${esc(r.symbol)}" class="tc ${esc(r.trendClass || 'NO_UPTREND')}" title="${esc(TREND[r.trendClass] || 'No Uptrend')}">
       <td>${esc(r.exchange || '')}</td>
-      <td><div><span class="tkr">${esc(r.symbol)}</span>${r.userAdded ? '<span class="added">You added</span>' : ''}</div>
+      <td><div><a href="#" class="tkr" data-ses="${esc(r.symbol)}" title="Open the session analysis for ${esc(r.symbol)}">${esc(r.symbol)}</a>${r.userAdded ? '<span class="added">You added</span>' : ''}</div>
         <div class="cname">${esc(r.name || '')}</div>
         <div><span class="tag ${r.side === 'Long' ? 'long' : 'short'}">${esc(r.side || '—')}</span>${q}</div>
+        <div><span class="tcbadge">${esc(TREND[r.trendClass] || 'No Uptrend')}</span>${r.list === 'CORE' ? ` <span class="lscore" title="${esc((r.longScoreParts || []).join(' · '))}">#${r.rank} · Long score ${r.longScore}</span>` : ''}</div>
+        <div class="sphase ${esc((r.sessionPhase || '').split(' ')[0])}" data-ses="${esc(r.symbol)}" title="${esc(r.sessionScores || '')} · click for the session analysis">${r.sessionPhase
+          ? `${esc(r.sessionName)}${r.sessionLive ? ' (live)' : ''} · <b>${r.sessionPct}% ${esc(r.sessionPhase)}</b>`
+          : 'Session phase —'}</div>
+        <div class="readings" title="Daily readings from completed candles. They are readings, not filters.">
+          <span><small>RSI</small>${fix(r.rsi, 0)}${r.rsi < 30 ? ' <i>washed</i>' : r.rsi > 70 ? ' <i>stretched</i>' : ''}</span>
+          <span><small>MACD</small><b class="${r.macdUp ? 'up' : 'down'}">${r.macdUp ? 'up' : 'down'}</b></span>
+          <span><small>ADX</small>${fix(r.adx, 0)} <b class="${r.adxRising ? 'up' : 'down'}">${r.adxRising ? '↑' : '↓'}</b></span>
+          <span><small>Stoch</small>${fix(r.stoch, 0)}</span>
+          <span><small>Band</small>${fix(r.bandPct, 0)}%</span>
+        </div>
         <div class="meta">${meta}</div>
         <div class="meta">${earn}</div>
         <button class="ghost small datatoggle" data-toggle="${esc(r.symbol)}">${open ? 'Hide data' : 'Data'}</button>
@@ -247,10 +246,10 @@
       <td class="num">${meter}</td>
       <td><span class="state ${esc(dir)}">${esc(r.state || '—')}</span></td>
       <td class="num"><span class="${r.changePct >= 0 ? 'up' : 'down'}">${signed(r.changePct)}</span><div class="meta">vs close</div></td>
-      <td class="num">${g ? lvl(g.callWall, g.callWallPct) : '—'}</td>
+      <td class="num">${g ? lvl(g.callWall, g.callWallPct, g.callWallOi) : '—'}</td>
       <td class="num">${g ? lvl(g.king, g.kingPct) : '—'}</td>
-      <td class="num">${g ? lvl(g.putWall, g.putWallPct) : '—'}</td>
-      <td class="num">${g ? esc(g.expiry) : 'No chain'}</td>
+      <td class="num">${g ? lvl(g.putWall, g.putWallPct, g.putWallOi) : '—'}</td>
+      <td class="num">${expiry}</td>
       <td><span class="tag ${biasCls}">${esc(r.bias || '—')}</span>
         <div class="arrows">15m ${arrow(r.trend15m)} · 1h ${arrow(r.trend1h)} · 4h ${arrow(r.trend4h)}</div>
         <div class="book">${book}</div></td>
@@ -259,15 +258,6 @@
     </tr>`;
   }
 
-  function superHtml(r) {
-    return `<div class="superpick">
-      <span class="big">${esc(r.symbol)}</span><span class="muted">${esc(r.name || '')}</span>
-      <span><b>${money(r.price)}</b> <span class="${r.changePct >= 0 ? 'up' : 'down'}">${signed(r.changePct)}</span></span>
-      <span>To breakout <b>${isNum(r.toBreakoutPct) && r.toBreakoutPct <= 0 ? 'broken out' : signed(r.toBreakoutPct)}</b> (${money(r.breakoutLevel)})</span>
-      <span>RVol <b>${fix(r.relVol)}×</b></span><span>Q <b>${r.qualityScore}</b></span>
-      <span class="state ${esc((r.state || '').split(' ')[0])}">${esc(r.state || '')}</span>
-    </div>`;
-  }
 
   // row actions
   document.addEventListener('click', async (e) => {
@@ -284,6 +274,12 @@
       toast('Removed ' + rm.dataset.remove);
       await loadWatchlist();
       loadScreen();
+      return;
+    }
+    const sesLink = e.target.closest('[data-ses]');
+    if (sesLink) {
+      e.preventDefault();
+      openSessions(sesLink.dataset.ses);
       return;
     }
     const tech = e.target.closest('[data-tech]');
@@ -538,6 +534,14 @@
   $('#sesDays').addEventListener('change', () => { store.set('sesDays', +$('#sesDays').value); loadSessions(); });
   $('#sesForm').addEventListener('submit', (e) => { e.preventDefault(); loadSessions(); });
 
+  /** Opens the Sessions tab on a ticker and loads it straight away. */
+  function openSessions(sym) {
+    $('#sesInput').value = sym;
+    showTab('sessions');
+    window.scrollTo({ top: 0 });
+    loadSessions();
+  }
+
   async function loadSessions() {
     const sym = $('#sesInput').value.trim().toUpperCase();
     if (!sym) return;
@@ -697,9 +701,7 @@
       <h3>3. Quality</h3><p>${esc(qualityText)} Each clip is worth 20 points, with the score fading the further outside the clip a value sits (zero at ten times away). A missing quote scores the spread clip at half.</p>
       <h3>4. The lists</h3>
       <ul>
-        <li><b>Top 10</b>: the ten names where the 50-day average is furthest above the 200-day, as a percent of the 200-day.</li>
-        <li><b>Core</b>: every other name with the 50-day above the 200-day. Names you added without an uptrend sit underneath.</li>
-        <li><b>Super core</b>: of those, names that are compliant, above the 1-hour 20 EMA, at 1× relative volume or more, more than 3 trading days from earnings and a quality pass. The one closest to its breakout level wins.</li>
+        <li><b>Core</b>: every name that passes the screen and is not No Uptrend, with no limit on how many. It is sorted by the latest session's phase (the Sessions indicator on 5-minute candles; pre-market or New York for stocks, a live session once it has 30 minutes): Bull Distribution, Bull Absorption, Bear Absorption, Bull Manipulation, Bull Accumulation, then everything else. Within a phase the higher percent goes first, then the higher long score. The long score (0–100) is: trend class (Strong Uptrend 35, Early Bullish Reversal 25, Early Bearish Reversal 5), 15m/1h/4h bias (Bullish 10, Mixed 5), above the 1h 20 EMA 5, +DI over −DI 10, MACD up 5, RSI 50–70 5 (40–50 or 70–80: 2), quality score ÷ 10, relative volume 1× or more 5, Zoya compliant 5, room to the call wall 10 (5 if under it by less than 1 ATR), and −15 with earnings inside 3 trading days. Ties go to the wider 50-day-over-200-day gap. Names you added without an uptrend sit underneath.</li>
       </ul>
       <h3>5. Readings on each row</h3>
       <ul>
@@ -708,7 +710,9 @@
         <li><b>Current state</b>: initiation is a move of 0.6 ATR or more on 1.3× volume; accumulation (up) or distribution (down) is a move of 0.45 ATR or more, or volume of 1× with a close in the third of the range that agrees; anything smaller is manipulation.</li>
         <li><b>To breakout</b>: the distance to the higher of today's premarket high and the prior day's high.</li>
         <li><b>Bias</b>: close against a rising or falling 20 EMA on completed 15-minute, 1-hour and 4-hour candles. More up than down is Bullish, more down is Bearish, otherwise Mixed.</li>
-        <li><b>GEX levels</b>: from the next listed option expiry. Call wall and put wall are the strikes with the most call and put open interest; King is the strike with the largest net gamma exposure. The percent is the strike's share of open interest on that expiry. Chains load at 8:00 AM ET each weekday.</li>
+        <li><b>Trend class</b> (the row colour): from completed daily candles, using the 20 EMA and the 50- and 200-day averages only. <b>Strong Uptrend</b>: 50-day above the 200-day, close above the 50-day and the 20 EMA. <b>Early Bullish Reversal</b>: the 50-day crossed above the 200-day in the last 15 sessions, or the close reclaimed the 50-day and a rising 20 EMA while the 50-day is still below the 200-day. <b>Early Bearish Reversal</b>: 50-day above the 200-day but the close lost the 50-day, or sits under a falling 20 EMA. <b>No Uptrend</b>: anything else; fewer than 200 daily candles means no structure, so it stays No Uptrend.</li>
+        <li><b>RSI, MACD, ADX, Stoch, Band</b>: daily readings on every row (14-day RSI, 12/26/9 MACD, 14-day ADX with its direction, 14/3 stochastic, position inside the 20-day 2σ Bollinger band). They are readings, not filters.</li>
+        <li><b>GEX levels</b>: every listed stock's option chain is read once a day (8:00 AM ET on weekdays, and on the first screen for a name that is new that day). Open interest is summed by strike across the expiries in the next 45 days. Call wall: the strike with the most call open interest. Put wall: the strike with the most put open interest. King: the strike with the largest net gamma exposure. Each shows its open interest and its share of all open interest in the window. Expiry is the date holding the most open interest; "as of" flags a chain that could not be refreshed today.</li>
         <li><b>Session phases</b> (Sessions tab): Asia 6 PM–2 AM, London 2–8 AM, New York 8 AM–5 PM ET, each scored 0–100% for accumulation (tight, quiet balance), manipulation (sweeps the prior session's high or low and closes back inside), absorption (heavy effort, no progress) and distribution (a one-way expansion). Scored on 5-minute candles only, so every timeframe shows the same boxes. Bull/Bear comes from the close location, the swept side or the body direction.</li>
         <li><b>Market line</b>: SPY, QQQ and IWM against today's VWAP, and advancers/decliners on Nasdaq and NYSE.</li>
       </ul>
