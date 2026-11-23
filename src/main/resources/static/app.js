@@ -31,7 +31,7 @@
   const etTime = (iso) => iso ? new Date(iso).toLocaleTimeString('en-US', { timeZone: 'America/New_York', hour: 'numeric', minute: '2-digit', second: '2-digit' }) : '—';
   const etStamp = (iso) => iso ? new Date(iso).toLocaleString('en-US', { timeZone: 'America/New_York', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) + ' ET' : '—';
   const arrow = (t) => t > 0 ? '↑' : t < 0 ? '↓' : '–';
-  const SIGNAL = { BUY_NOW: 'Buy now', READY: 'Ready to buy', SELL_NOW: 'Sell now', READY_SELL: 'Ready to sell', HOLD: 'Hold', WAIT: 'Wait' };
+  const SIGNAL = { BUY_NOW: 'Buy now', READY: 'Ready to buy', READY_SELL: 'Ready to sell', SELL_NOW: 'Sell now', HOLD: 'Hold', WAIT: 'Wait' };
   const TREND = { STRONG_UPTREND: 'Strong Uptrend', EARLY_BULLISH_REVERSAL: 'Early Bullish Reversal', EARLY_BEARISH_REVERSAL: 'Early Bearish Reversal', NO_UPTREND: 'No Uptrend' };
   const zoyaLabel = { COMPLIANT: 'Compliant', NON_COMPLIANT: 'Not compliant', QUESTIONABLE: 'Questionable', NOT_COVERED: 'Not covered', NOT_CHECKED: 'Not checked' };
 
@@ -133,6 +133,7 @@
     $('#statusLine').title = `${s.screened ?? 0} names from ${s.screenSource || '—'}; ${s.passedFilters ?? 0} passed every filter. Session: ${data.session}.`;
     const note = [];
     if (s.screenNote) note.push(s.screenNote);
+    if (s.chainNote) note.push(s.chainNote);
     if (!s.zoyaConfigured) note.push('Zoya is set to the API (ZOYA_SOURCE=api) but ZOYA_API_KEY is empty, so every name shows "Not checked".');
     $('#screenNote').textContent = note.join(' ');
     $('#screenNote').classList.toggle('hidden', note.length === 0);
@@ -244,6 +245,7 @@
         <div>${r.side === 'Long' ? '<span class="tag long" title="+DI above −DI">Long</span>' : '<span class="tag flat" title="−DI above +DI: no long edge yet">Flat</span>'}${q}</div>
         <div><span class="tcbadge">${esc(TREND[r.trendClass] || 'No Uptrend')}</span></div>
         ${r.list === 'CORE' ? `<div class="sigline"><span class="sig ${esc(r.signal || 'WAIT')}">${esc(SIGNAL[r.signal] || 'Wait')}</span>${(r.signalNotes || []).length ? `<span class="signotes">${esc(r.signalNotes.join(' · '))}</span>` : ''}</div>` : ''}
+        ${r.signal === 'WAIT' && isNum(r.expBuy) ? `<div class="expected" title="Expected buy at the breakout level (premarket or prior-day high); stop at today's low or the put wall; target buy + 1 ATR, capped at the call wall">Expected: <b>buy ${money(r.expBuy)}</b> · stop ${money(r.expStop)} · target ${money(r.expTarget)}</div>` : ''}
         ${r.superStock ? '<div class="superbadge">★ Super stock · lowest risk, highest reward</div>' : ''}
         ${r.list === 'CORE' ? `<div class="setup"><span class="lscore" title="${esc((r.setupParts || []).join(' · '))}">#${r.rank} · Setup ${r.setupScore}</span>
           <span title="${esc((r.longScoreParts || []).join(' · '))}">Long ${r.longScore}</span>
@@ -422,8 +424,8 @@
   }
 
   function pvTable(rows, upSection, empty) {
-    const head = '<thead><tr><th>Stock</th><th class="num">Price</th><th>PV Status</th><th class="num">Entry</th><th class="num">Stop</th><th class="num">RSI(2)</th><th class="num">Volume vs Avg</th><th>Rules Passed</th></tr></thead>';
-    if (!rows.length) return head + `<tbody><tr class="empty"><td colspan="8">${esc(empty)}</td></tr></tbody>`;
+    const head = '<thead><tr><th>Stock</th><th class="num">Price</th><th>PV Status</th><th class="num">Entry</th><th class="num">Stop</th><th class="num">Target</th><th class="num">RSI(2)</th><th class="num">Volume vs Avg</th><th>Rules Passed</th></tr></thead>';
+    if (!rows.length) return head + `<tbody><tr class="empty"><td colspan="9">${esc(empty)}</td></tr></tbody>`;
     const set = pv.settings || {};
     return head + '<tbody>' + rows.map((r) => {
       const na = r.status === 'NA_DOWNTREND';
@@ -435,18 +437,31 @@
           ${rule(ru.rsiBelow, `RSI(${set.rsiLength || 2}) < ${set.rsiBuyBelow ?? 10}`)}
           ${rule(ru.volBelowAvg, `Vol < ${set.volMaxPct ?? 100}% of ${set.volLength || 50}d avg`)}</ul>`;
       const status = `<span class="pvst ${esc(r.status)}">${esc(PV_LABEL[r.status] || r.status)}</span>${r.exitReason ? `<div class="pvreason">${esc(r.exitReason)}${isNum(r.exit) ? ' at ' + money(r.exit) : ''}</div>` : ''}${r.nearSetup && r.status === 'WAIT' ? '<div class="pvreason near">Near setup</div>' : ''}`;
-      const entry = isNum(r.entry) ? `${money(r.entry)}<span class="pct">${r.entryEstimated ? 'est. next open' : esc(r.entryDate || '')}${isNum(r.barsHeld) ? ' · bar ' + r.barsHeld : ''}</span>` : '—';
-      const stop = isNum(r.stop) ? `${money(r.stop)}<span class="pct">${isNum(r.entry) && r.entry > 0 ? '−' + ((1 - r.stop / r.entry) * 100).toFixed(1) + '%' : ''}</span>` : '—';
+      const ex = r.expected;
+      const pctFrom = (a, b) => isNum(a) && isNum(b) && b > 0 ? ((a / b - 1) * 100) : NaN;
+      let entry, stop, target;
+      if (isNum(r.entry)) {
+        entry = `${money(r.entry)}<span class="pct">${r.entryEstimated ? 'est. next open' : esc(r.entryDate || '')}${isNum(r.barsHeld) ? ' · bar ' + r.barsHeld : ''}</span>`;
+        stop = isNum(r.stop) ? `${money(r.stop)}<span class="pct">${signed(pctFrom(r.stop, r.entry), 1)}</span>` : '—';
+        target = r.status === 'SELL' ? '—' : `&gt; ${money(r.entry)}<span class="pct">first close above entry</span>`;
+      } else if (ex && !na) {
+        entry = `<span class="expect">${money(ex.buy)}</span><span class="pct">${ex.dropPct > 0 ? 'expected buy: a close ≤ this (' + signed(-ex.dropPct, 1) + ')' : 'expected buy: last close (RSI already under the level)'}</span>`;
+        stop = `<span class="expect">${money(ex.stop)}</span><span class="pct">expected · ${signed(pctFrom(ex.stop, ex.buy), 1)}</span>`;
+        target = `<span class="expect">${money(ex.target)}</span><span class="pct">expected · ${signed(pctFrom(ex.target, ex.buy), 1)}</span>`;
+      } else { entry = stop = target = '—'; }
       const vol = isNum(r.volPct) ? `<span class="${r.volPct < (set.volMaxPct ?? 100) ? 'up' : ''}">${r.volPct.toFixed(0)}%</span>` : '—';
       const rsi = isNum(r.rsi2) ? `<span class="${r.rsi2 < (set.rsiBuyBelow ?? 10) ? 'up' : r.rsi2 < (set.rsiReadyBelow ?? 20) ? 'warnline' : ''}">${r.rsi2.toFixed(1)}</span>` : '—';
       return `<tr class="pvrow ${esc(r.status)}">
         <td><a href="#" class="tkr" data-ses="${esc(r.symbol)}">${esc(r.symbol)}</a>${r.onScreen ? '' : ' <span class="added">Off screen</span>'}
           <div class="cname">${esc(r.name || '')}</div>
-          ${r.error ? `<div class="meta warnline">${esc(r.error)}</div>` : r.note ? `<div class="meta">${esc(r.note)}</div>` : ''}</td>
+          ${r.error ? `<div class="meta warnline">${esc(r.error)}</div>`
+            : r.expected && !isNum(r.entry) && r.status !== 'READY_TO_BUY' ? `<div class="meta">Expected BUY also needs: ${esc(r.expected.needs.join('; '))}</div>`
+            : r.note ? `<div class="meta">${esc(r.note)}</div>` : ''}</td>
         <td class="num">${money(r.price)}</td>
         <td>${status}</td>
         <td class="num">${entry}</td>
         <td class="num">${stop}</td>
+        <td class="num">${target}</td>
         <td class="num">${rsi}</td>
         <td class="num">${vol}</td>
         <td>${rulesCell}</td>
@@ -864,7 +879,7 @@
           <b>reward to risk</b> 25 (risk from the price to support, the higher of today's low and the put wall, at least ¼ ATR; reward up to today's low + 1 ATR, capped at the call wall; 3:1 or better scores 25);
           <b>session phase</b> 20 (the latest pre-market or New York session from the Sessions indicator: Bull Distribution 20, Bull Absorption 16, Bear Absorption 12, Bull Manipulation 10, Bull Accumulation 8, times its percent);
           <b>long score</b> 30 (the long score × 0.3).
-          Names are grouped by signal first (Buy now, Ready to buy, Sell now, Ready to sell, Hold, Wait), then by the setup score. The <b>super stock</b> is the best Buy now name (or Ready to buy when there is no Buy now). It stays first whatever the sort.</li>
+          Names are grouped by signal first (Buy now, Ready to buy, Ready to sell, Sell now, Hold, Wait), then by the setup score. A Wait shows the expected buy (the breakout level), its stop (today's low or the put wall, at least ¼ ATR under) and target (buy + 1 ATR, capped at the call wall). The <b>super stock</b> is the best Buy now name (or Ready to buy when there is no Buy now). It stays first whatever the sort.</li>
         <li><b>Signals</b>. Sell signals are about leaving a long and are checked first.
           <b>Sell now</b>: an Early Bearish Reversal below the 1h 20 EMA with a bias that is not Bullish; or the price at or above the call wall; or 100% of the ATR range used into a Bear session of 60% or more.
           <b>Ready to sell</b>: an Early Bearish Reversal; below the 1h 20 EMA with a Bearish bias; 100% of the ATR range used; earnings inside 3 trading days; or a Bear Distribution or Bear Manipulation session of 70% or more.
@@ -882,10 +897,11 @@
         <li><b>Bias</b>: close against a rising or falling 20 EMA on completed 15-minute, 1-hour and 4-hour candles. More up than down is Bullish, more down is Bearish, otherwise Mixed.</li>
         <li><b>Trend class</b> (the row colour): from completed daily candles, using the 20 EMA and the 50- and 200-day averages only. <b>Strong Uptrend</b>: 50-day above the 200-day, close above the 50-day and the 20 EMA. <b>Early Bullish Reversal</b>: the 50-day crossed above the 200-day in the last 15 sessions, or the close reclaimed the 50-day and a rising 20 EMA while the 50-day is still below the 200-day. <b>Early Bearish Reversal</b>: 50-day above the 200-day but the close lost the 50-day, or sits under a falling 20 EMA. <b>No Uptrend</b>: anything else; fewer than 200 daily candles means no structure, so it stays No Uptrend.</li>
         <li><b>PV Confirm Signals</b>: nested under the trend check (SMA50 above SMA200, unchanged), on daily bars, long only.
-          <b>Uptrend</b>: the four rules are close above SMA200, SPY above its SMA200, RSI(2) under 10 and volume under its 50-day average (the average includes the day). All four on a completed bar is a <b>BUY</b>; the trade enters at the next open, with the stop at entry − 2.5 × ATR(14) of the signal bar. <b>IN TRADE</b> until the first exit, checked on each completed bar from the entry bar on: <b>STOP</b> when the low touches the stop (filled at the stop, or the open on a gap below), <b>TAKE PROFIT</b> on the first close above the entry, <b>TIME EXIT</b> at the close of the 10th bar. The bar it exits on shows <b>SELL</b> with the reason; when a new BUY fires on the same bar, the SELL shows first and the note says so. <b>READY TO BUY</b>: the other three rules pass and RSI(2) is under 20 but not yet under 10. <b>Near Setup</b>: 3 of the 4 rules pass while flat. Everything else is <b>WAIT</b>.
+          <b>Uptrend</b>: the four rules are close above SMA200, SPY above its SMA200, RSI(2) under 10 and volume under its 50-day average (the average includes the day). All four on a completed bar is a <b>BUY</b>; the trade enters at the next open, with the stop at entry − 2.5 × ATR(14) of the signal bar. <b>IN TRADE</b> until the first exit, checked on each completed bar from the entry bar on: <b>STOP</b> when the low touches the stop (filled at the stop, or the open on a gap below), <b>TAKE PROFIT</b> on the first close above the entry, <b>TIME EXIT</b> at the close of the 10th bar. The bar it exits on shows <b>SELL</b> with the reason; when a new BUY fires on the same bar, the SELL shows first and the note says so. <b>READY TO BUY</b>: the other three rules pass and RSI(2) is under 20 but not yet under 10. WAIT and READY TO BUY show the <b>expected buy</b> (the highest next close that would put RSI(2) under 10, solved from the Wilder averages; today's close when RSI(2) is already there), the expected stop (that − 2.5 × ATR) and an expected target (the 5-day average including that close, where an RSI(2) dip usually reverts; the trade itself still exits on the first close above the entry). <b>Near Setup</b>: 3 of the 4 rules pass while flat. Everything else is <b>WAIT</b>.
           <b>Downtrend</b>: no new entries, shown as N/A – Downtrend. A trade opened in the uptrend is still tracked to its SELL after the flip, and stays listed even if the name drops off the screen.
           The state is rebuilt by replaying the last 40 daily bars. Today's bar counts as complete from 4:15 PM ET; before that the live bar's open is only used to fill a BUY from the day before. It runs a few minutes after each screen and at 4:15 PM ET, when every BUY, SELL and READY TO BUY is sent once as an alert. The settings panel changes the thresholds.</li>
         <li><b>RSI, MACD, ADX, Stoch, Band</b>: daily readings on every row (14-day RSI, 12/26/9 MACD, 14-day ADX with its direction, 14/3 stochastic, position inside the 20-day 2σ Bollinger band). They are readings, not filters.</li>
+        <li><b>Option chains</b> come from Cboe's free delayed quotes (cdn.cboe.com, every expiry in one file, no login), with Yahoo as the fallback; set SCREENER_OPTIONS_SOURCE=yahoo to use Yahoo only. A name whose chain could not be read is tried again on the next screen; when chains are missing, the note above the lists says why and <code>GET /api/chains/status</code> has the details.</li>
         <li><b>GEX levels</b>: every listed stock's option chain is read once a day (8:00 AM ET on weekdays, and on the first screen for a name that is new that day). Open interest is summed by strike across the expiries in the next 45 days. Call wall: the strike with the most call open interest. Put wall: the strike with the most put open interest. King: the strike with the largest net gamma exposure. Each shows its open interest and its share of all open interest in the window. Expiry is the date holding the most open interest; "as of" flags a chain that could not be refreshed today.</li>
         <li><b>Session phases</b> (Sessions tab): Asia 6 PM–2 AM, London 2–8 AM, New York 8 AM–5 PM ET, each scored 0–100% for accumulation (tight, quiet balance), manipulation (sweeps the prior session's high or low and closes back inside), absorption (heavy effort, no progress) and distribution (a one-way expansion). Scored on 5-minute candles only, so every timeframe shows the same boxes. Bull/Bear comes from the close location, the swept side or the body direction.</li>
         <li><b>Market line</b>: SPY, QQQ and IWM against today's VWAP, and advancers/decliners on Nasdaq and NYSE.</li>
@@ -894,6 +910,7 @@
       <ul>
         <li><code>GET /api/screen</code>: the full snapshot, every row and the market line.</li>
         <li><code>GET /api/prices</code>: the light payload the page polls every 10 seconds.</li>
+        <li><code>GET /api/chains/status</code>: why option chains are or are not loading (source, Cboe and Yahoo errors, last run's counts). <code>POST /api/chains/refresh</code> reads them all again now.</li>
         <li><code>GET /api/pv</code>: PV Confirm rows (uptrend and downtrend), SPY's state and the settings. <code>POST /api/pv/refresh</code> re-runs it; <code>GET|PUT /api/pv/settings</code> reads or saves the settings; <code>GET /api/pv/alerts</code> lists the 4:15 PM alerts.</li>
         <li><code>POST /api/refresh</code>: run the screen now.</li>
         <li><code>GET /api/watchlist</code>, <code>POST /api/watchlist {"tickers":"SRTA, AUR"}</code>, <code>DELETE /api/watchlist/{ticker}</code>, <code>GET /api/watchlist/export</code>.</li>

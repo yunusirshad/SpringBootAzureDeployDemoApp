@@ -37,6 +37,7 @@ public class ScreenService {
     private static final List<String> INDEXES = List.of("SPY", "QQQ", "IWM");
 
     private final ScreenerProperties props;
+    private final CboeClient cboe;
     private final TradingViewClient tv;
     private final YahooClient yahoo;
     private final ZoyaService zoya;
@@ -51,6 +52,9 @@ public class ScreenService {
     private final Map<String, GexLevels> gexCache;
     /** The day each name's chain was last asked for, so a name with no options is tried once a day, not every run. */
     private final Map<String, LocalDate> chainTried = new ConcurrentHashMap<>();
+    private volatile String chainNote;
+    private volatile String lastChainSource;
+    private volatile Map<String, Object> chainStats = Map.of();
     /** Open interest is summed over the expiries in the next 45 days (at most 8). */
     static final int CHAIN_DAYS = 45, CHAIN_MAX_EXPIRIES = 8;
     private final List<Alert> recentlyRang = new CopyOnWriteArrayList<>();
@@ -62,8 +66,9 @@ public class ScreenService {
 
     public ScreenService(ScreenerProperties props, TradingViewClient tv, YahooClient yahoo, ZoyaService zoya,
                          StockAnalyzer analyzer, WatchlistService watchlist, AlertService alerts,
-                         MarketClock clock, JsonStore store) {
+                         MarketClock clock, JsonStore store, CboeClient cboe) {
         this.props = props;
+        this.cboe = cboe;
         this.tv = tv;
         this.yahoo = yahoo;
         this.zoya = zoya;
@@ -288,6 +293,10 @@ public class ScreenService {
             SetupScore.Signal sig = SetupScore.signal(r);
             r.signal = sig.signal();
             r.signalNotes = sig.notes();
+            double[] ex = SetupScore.WAIT.equals(r.signal) ? SetupScore.expected(r) : null;
+            r.expBuy = ex == null ? null : ex[0];
+            r.expStop = ex == null ? null : ex[1];
+            r.expTarget = ex == null ? null : ex[2];
             r.list = r.userAdded ? "NO_UPTREND" : "SCREEN_ONLY";
             r.rank = 0;
         }
@@ -323,6 +332,7 @@ public class ScreenService {
         }
         s.compliant = (int) s.rows.stream().filter(r -> r.screenPass && "COMPLIANT".equals(r.zoya)).count();
         s.chainsAvailable = !gexCache.isEmpty();
+        s.chainNote = chainNote;
     }
 
     /** Core holds compliant names in a Strong Uptrend or Early Bullish Reversal only. */
@@ -334,8 +344,8 @@ public class ScreenService {
         return switch (signal == null ? "" : signal) {
             case SetupScore.BUY_NOW -> 0;
             case SetupScore.READY -> 1;
-            case SetupScore.SELL_NOW -> 2;
-            case SetupScore.READY_SELL -> 3;
+            case SetupScore.READY_SELL -> 2;
+            case SetupScore.SELL_NOW -> 3;
             case SetupScore.HOLD -> 4;
             default -> 5;
         };
@@ -409,6 +419,48 @@ public class ScreenService {
 
     // ---- chains ----------------------------------------------------------------------------
 
+    /** Cboe first (unless screener.options.source is "yahoo"), then Yahoo when Cboe did not answer. */
+    private YahooClient.ChainResult chains(String symbol, LocalDate today) {
+        if (!"yahoo".equalsIgnoreCase(props.getOptions().getSource())) {
+            YahooClient.ChainResult c = cboe.chainResult(symbol, CHAIN_DAYS, CHAIN_MAX_EXPIRIES, today);
+            if (c.answered()) { lastChainSource = "Cboe"; return c; }
+        }
+        YahooClient.ChainResult y = yahoo.chainResult(symbol, CHAIN_DAYS, CHAIN_MAX_EXPIRIES);
+        if (y.answered()) lastChainSource = "Yahoo";
+        return y;
+    }
+
+    private String chainError() {
+        List<String> e = new ArrayList<>();
+        if (!"yahoo".equalsIgnoreCase(props.getOptions().getSource()) && cboe.lastError() != null) e.add(cboe.lastError());
+        if (yahoo.lastError() != null) e.add(yahoo.lastError());
+        return String.join(" · ", e);
+    }
+
+    /** For GET /api/chains/status. */
+    public Map<String, Object> chainStatus() {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("source", props.getOptions().getSource());
+        m.put("lastSourceUsed", lastChainSource);
+        m.put("cboeUrl", props.getOptions().getCboeUrl() + "{SYMBOL}.json");
+        m.put("cboeLastError", cboe.lastError());
+        m.put("yahoo", yahoo.sessionStatus());
+        m.put("lastRun", chainStats);
+        m.put("cached", gexCache.size());
+        m.put("cachedToday", gexCache.values().stream().filter(g -> clock.now().toLocalDate().equals(g.asOf())).count());
+        m.put("note", chainNote);
+        return m;
+    }
+
+    /** Reads every listed name's chain again now. */
+    public void refreshChainsNow() {
+        pool.submit(() -> {
+            refreshChains(snapshot.rows.stream().map(r -> r.symbol).toList());
+            rebuild(snapshot);
+            store.write(SNAPSHOT, snapshot);
+        });
+    }
+
     /** Names with no chain read today that have not been tried today either. */
     List<String> chainsDue(List<String> symbols) {
         LocalDate today = clock.now().toLocalDate();
@@ -422,10 +474,13 @@ public class ScreenService {
         if (symbols.isEmpty()) return;
         int found = 0;
         LocalDate today = clock.now().toLocalDate();
+        int failed = 0, none = 0;
         for (String s : symbols) {
-            chainTried.put(s, today);
-            List<OptionChain> chains = yahoo.optionChains(s, CHAIN_DAYS, CHAIN_MAX_EXPIRIES);
-            if (chains.isEmpty()) continue;
+            YahooClient.ChainResult cr = chains(s, today);
+            // only an answer from Yahoo counts as tried; a failed session is retried on the next screen
+            if (cr.answered()) chainTried.put(s, today); else failed++;
+            List<OptionChain> chains = cr.chains();
+            if (chains.isEmpty()) { if (cr.answered()) none++; continue; }
             StockRow r = snapshot.rows.stream().filter(x -> x.symbol.equals(s)).findFirst().orElse(null);
             double spot = r != null && r.price != null ? r.price : chains.get(0).spot();
             GexLevels g = GexCalculator.compute(chains, spot, today);
@@ -434,6 +489,12 @@ public class ScreenService {
         lastChainRun = OffsetDateTime.now().toString();
         snapshot.lastChainRun = lastChainRun;
         store.write(GEX, gexCache);
+        chainNote = failed == 0 ? null : "Option chains: " + failed + " of " + symbols.size()
+                + " names could not be read. " + chainError()
+                + " Names without a chain show \"No chain\"; GET /api/chains/status has the details.";
+        chainStats = Map.of("asked", symbols.size(), "withOpenInterest", found, "noOptions", none, "failed", failed,
+                "at", OffsetDateTime.now().toString());
+        if (failed > 0) log.warn("Chains: {} of {} failed: {}", failed, symbols.size(), chainError());
         log.info("Chains: {} of {} names had open interest", found, symbols.size());
     }
 

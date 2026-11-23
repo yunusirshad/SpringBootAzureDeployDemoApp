@@ -28,6 +28,9 @@ public class YahooClient {
     private final ScreenerProperties props;
     private volatile String crumb;
     private volatile Instant crumbFailedAt;
+    /** Why the last crumb or option-chain call failed, for the status line; null when fine. */
+    private volatile String lastError;
+    private volatile Instant crumbAt;
 
     public YahooClient(ObjectMapper mapper, ScreenerProperties props) {
         this.http = new Http(mapper);
@@ -88,36 +91,82 @@ public class YahooClient {
 
     // ---- crumb-backed endpoints -------------------------------------------------------------
 
-    private synchronized String crumb() throws IOException, InterruptedException {
-        if (!props.getYahoo().isCrumbEnabled()) return null;
+    /**
+     * Yahoo's cookie + crumb session, needed for option chains, bid/ask and earnings dates. Gets the session cookie
+     * from fc.yahoo.com (a 404 there is normal), then from a finance.yahoo.com page if that did not work, and asks
+     * for the crumb after each. A failure is logged with its reason and retried after 5 minutes.
+     */
+    private synchronized String crumb() throws InterruptedException {
+        if (!props.getYahoo().isCrumbEnabled()) {
+            lastError = "Option chains are off: SCREENER_YAHOO_CRUMB is false. Start the app without it to load them.";
+            return null;
+        }
         if (crumb != null) return crumb;
-        if (crumbFailedAt != null && crumbFailedAt.isAfter(Instant.now().minus(Duration.ofMinutes(15)))) return null;
-        try {
-            http.get("https://fc.yahoo.com", headers()); // sets the session cookie; a 404 here is normal
-            HttpResponse<String> r = http.get(BASE + "/v1/test/getcrumb", headers());
-            String body = r.body() == null ? "" : r.body().trim();
-            if (r.statusCode() == 200 && !body.isEmpty() && !body.startsWith("{") && body.length() < 40) {
-                crumb = body;
-                return crumb;
+        if (crumbFailedAt != null && crumbFailedAt.isAfter(Instant.now().minus(Duration.ofMinutes(5)))) return null;
+        String why = null;
+        for (String cookieUrl : List.of("https://fc.yahoo.com", "https://finance.yahoo.com/quote/SPY/")) {
+            try {
+                http.get(cookieUrl, Map.of("User-Agent", props.getYahoo().getUserAgent(), "Accept", "text/html,*/*"));
+            } catch (IOException e) {
+                why = "could not reach " + Http.host(cookieUrl) + " (" + e.getMessage() + ")";
             }
-        } catch (IOException e) {
-            log.debug("Yahoo crumb failed: {}", e.getMessage());
+            try {
+                HttpResponse<String> r = http.get(BASE + "/v1/test/getcrumb",
+                        Map.of("User-Agent", props.getYahoo().getUserAgent(), "Accept", "text/plain,*/*"));
+                String body = r.body() == null ? "" : r.body().trim();
+                if (r.statusCode() == 200 && !body.isEmpty() && !body.startsWith("{") && !body.startsWith("<") && body.length() < 40) {
+                    crumb = body;
+                    crumbAt = Instant.now();
+                    crumbFailedAt = null;
+                    lastError = null;
+                    log.info("Yahoo session ready (cookie from {})", Http.host(cookieUrl));
+                    return crumb;
+                }
+                why = "getcrumb answered HTTP " + r.statusCode() + (r.statusCode() == 429 ? " (rate limited)" : "")
+                        + (body.isEmpty() ? "" : ": " + body.substring(0, Math.min(80, body.length())));
+            } catch (IOException e) {
+                why = "getcrumb failed (" + e.getMessage() + ")";
+            }
         }
         crumbFailedAt = Instant.now();
+        lastError = "Yahoo session failed: " + why + ". Retrying in 5 minutes.";
+        log.warn(lastError);
         return null;
     }
 
+    /** For /api/chains/status: is the session up, and the last error. */
+    public Map<String, Object> sessionStatus() {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("crumbEnabled", props.getYahoo().isCrumbEnabled());
+        m.put("sessionReady", crumb != null);
+        m.put("sessionSince", crumbAt == null ? null : crumbAt.toString());
+        m.put("lastFailureAt", crumbFailedAt == null ? null : crumbFailedAt.toString());
+        m.put("lastError", lastError);
+        return m;
+    }
+
+    public String lastError() { return lastError; }
+
     private JsonNode crumbGet(String pathAndQuery) throws IOException, InterruptedException {
-        String c = crumb();
-        if (c == null) return null;
-        String sep = pathAndQuery.contains("?") ? "&" : "?";
-        HttpResponse<String> r = http.get(BASE + pathAndQuery + sep + "crumb=" + enc(c), headers());
-        if (r.statusCode() == 401 || r.statusCode() == 403) {
-            synchronized (this) { crumb = null; }
-            return null;
+        for (int attempt = 0; attempt < 2; attempt++) {
+            String c = crumb();
+            if (c == null) return null;
+            String sep = pathAndQuery.contains("?") ? "&" : "?";
+            HttpResponse<String> r = http.get(BASE + pathAndQuery + sep + "crumb=" + enc(c), headers());
+            if (r.statusCode() == 401 || r.statusCode() == 403) {   // the crumb went stale: get a new one once
+                synchronized (this) { crumb = null; }
+                lastError = "Yahoo rejected the session (HTTP " + r.statusCode() + "); renewing it";
+                continue;
+            }
+            if (r.statusCode() / 100 != 2) {
+                lastError = "Yahoo answered HTTP " + r.statusCode() + (r.statusCode() == 429 ? " (rate limited)" : "")
+                        + " for " + pathAndQuery.replaceAll("\\?.*", "");
+                log.warn(lastError);
+                return null;
+            }
+            return http.mapper().readTree(r.body());
         }
-        if (r.statusCode() / 100 != 2) return null;
-        return http.mapper().readTree(r.body());
+        return null;
     }
 
     /** Batch quotes with bid/ask. Empty map when the crumb session is not available. */
@@ -155,14 +204,27 @@ public class YahooClient {
      * {@code maxExpiries}, each with open interest by strike. Empty when the chain cannot be read.
      */
     public List<OptionChain> optionChains(String symbol, int maxDays, int maxExpiries) {
+        return chainResult(symbol, maxDays, maxExpiries).chains();
+    }
+
+    /**
+     * Option chains plus whether Yahoo actually answered. {@code answered} is false when the session or the request
+     * failed (worth retrying soon); true with no chains means the ticker has no listed options.
+     */
+    public record ChainResult(List<OptionChain> chains, boolean answered, String error) {}
+
+    public ChainResult chainResult(String symbol, int maxDays, int maxExpiries) {
         List<OptionChain> out = new ArrayList<>();
         try {
             JsonNode root = crumbGet("/v7/finance/options/" + enc(symbol));
-            if (root == null) return out;
+            if (root == null) return new ChainResult(out, false, lastError);
+            JsonNode res0 = root.path("optionChain").path("result").path(0);
+            if (res0.isMissingNode() || !res0.path("options").path(0).has("expirationDate")) {
+                return new ChainResult(out, true, "no listed options");
+            }
             JsonNode res = root.path("optionChain").path("result").path(0);
             double spot = Http.num(res.path("quote"), "regularMarketPrice");
             JsonNode first = res.path("options").path(0);
-            if (first.isMissingNode() || !first.has("expirationDate")) return out;
             long firstExp = first.get("expirationDate").asLong();
             out.add(chain(symbol, spot, first));
             long limit = Instant.now().getEpochSecond() + maxDays * 86_400L;
@@ -176,9 +238,10 @@ public class YahooClient {
                 if (opt.has("expirationDate")) out.add(chain(symbol, spot, opt));
             }
         } catch (Exception e) {
-            log.debug("Yahoo options failed for {}: {}", symbol, e.getMessage());
+            log.warn("Yahoo options failed for {}: {}", symbol, e.getMessage());
+            return new ChainResult(out, !out.isEmpty(), e.getMessage());
         }
-        return out;
+        return new ChainResult(out, true, null);
     }
 
     private static OptionChain chain(String symbol, double spot, JsonNode opt) {

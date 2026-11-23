@@ -197,6 +197,19 @@ public class ApiController {
     @GetMapping("/zoya")
     public Map<String, ZoyaService.Entry> zoyaCache() { return new java.util.TreeMap<>(zoya.all()); }
 
+    // ---- option chains -------------------------------------------------------------------------
+
+    /** Why option chains are or are not loading: the Yahoo session, the last error and the last run's counts. */
+    @GetMapping("/chains/status")
+    public Map<String, Object> chainStatus() { return screen.chainStatus(); }
+
+    /** Reads every name's option chain again now. */
+    @PostMapping("/chains/refresh")
+    public Map<String, Object> chainRefresh() {
+        screen.refreshChainsNow();
+        return Map.of("started", true);
+    }
+
     // ---- PV Confirm ---------------------------------------------------------------------------
 
     /** PV Confirm rows (uptrend and downtrend sections), SPY's state and the settings. */

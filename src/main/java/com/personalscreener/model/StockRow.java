@@ -25,6 +25,8 @@ public class StockRow {
     public boolean superStock;
     /** BUY_NOW, READY, HOLD, READY_SELL, SELL_NOW or WAIT. */
     public String signal = "WAIT";
+    /** For a Wait: expected buy (the breakout level), stop and target. */
+    public Double expBuy, expStop, expTarget;
     /** Why: the sell reasons, what a Buy now still needs, or why it is Hold or Wait. */
     public List<String> signalNotes = new ArrayList<>();
 

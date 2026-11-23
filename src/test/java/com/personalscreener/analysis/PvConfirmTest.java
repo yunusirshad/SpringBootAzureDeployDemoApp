@@ -183,4 +183,33 @@ class PvConfirmTest {
         set.atrMult = -1;
         assertThrows(IllegalArgumentException.class, set::validate);
     }
+
+    @Test
+    void expectedBuyIsTheCloseThatFiresTheSignal() {
+        Series s = new Series();
+        for (int i = 0; i < 250; i++) s.add(10 + i * 0.05, 1000);
+        s.add(s.last - 0.35, 500);                              // one down day: RSI(2) about 12, a WAIT
+        PvConfirm.Settings set = new PvConfirm.Settings();
+        set.rsiReadyBelow = 10;                                 // keep it a WAIT, not READY
+        var r = PvConfirm.evaluate(s.bars, null, s.spy(true), set);
+        assertEquals(PvConfirm.Status.WAIT, r.status());
+        var ex = r.expected();
+        assertNotNull(ex);
+        assertTrue(ex.buy() < r.close());
+        assertEquals(ex.buy() - 2.5 * r.atr(), ex.stop(), 1e-3);
+        assertTrue(ex.target() > ex.buy());
+        // closing exactly at the expected buy fires the BUY
+        s.add(ex.buy(), 500);
+        assertEquals(PvConfirm.Status.BUY, PvConfirm.evaluate(s.bars, null, s.spy(true), new PvConfirm.Settings()).status());
+    }
+
+    @Test
+    void closeJustAboveTheExpectedBuyDoesNotFire() {
+        Series s = new Series();
+        for (int i = 0; i < 250; i++) s.add(10 + i * 0.05, 1000);
+        s.add(s.last - 0.35, 500);
+        double buy = PvConfirm.evaluate(s.bars, null, s.spy(true), new PvConfirm.Settings()).expected().buy();
+        s.add(buy + 0.02, 500);
+        assertNotEquals(PvConfirm.Status.BUY, PvConfirm.evaluate(s.bars, null, s.spy(true), new PvConfirm.Settings()).status());
+    }
 }

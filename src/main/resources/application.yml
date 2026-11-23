@@ -63,6 +63,9 @@ screener:
     cache-hours: 24
   yahoo:
     crumb-enabled: ${SCREENER_YAHOO_CRUMB:true}
+  options:
+    # cboe: Cboe delayed quotes first, Yahoo as the fallback; yahoo: Yahoo only
+    source: ${SCREENER_OPTIONS_SOURCE:cboe}
   sec:
     user-agent: ${SCREENER_SEC_USER_AGENT:PersonalScreener/2026 contact@example.com}
   # Used only when TradingView cannot be reached.

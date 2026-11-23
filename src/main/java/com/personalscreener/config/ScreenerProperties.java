@@ -15,6 +15,7 @@ public class ScreenerProperties {
     private Quality quality = new Quality();
     private Zoya zoya = new Zoya();
     private Yahoo yahoo = new Yahoo();
+    private Options options = new Options();
     private TradingView tradingview = new TradingView();
     private Sec sec = new Sec();
     /** Symbols to screen when TradingView cannot be reached, so the app still has a universe. */
@@ -118,6 +119,18 @@ public class ScreenerProperties {
         public void setCacheHours(int v) { cacheHours = v; }
     }
 
+    public static class Options {
+        /** "cboe" (default): Cboe's delayed quotes, with Yahoo as the fallback. "yahoo": Yahoo only. */
+        private String source = "cboe";
+        /** The symbol is appended, then ".json". */
+        private String cboeUrl = "https://cdn.cboe.com/api/global/delayed_quotes/options/";
+
+        public String getSource() { return source; }
+        public void setSource(String v) { source = v; }
+        public String getCboeUrl() { return cboeUrl; }
+        public void setCboeUrl(String v) { cboeUrl = v; }
+    }
+
     public static class Yahoo {
         /** Use Yahoo's cookie + crumb session for batch quotes (bid/ask) and option chains. */
         private boolean crumbEnabled = true;
@@ -156,6 +169,8 @@ public class ScreenerProperties {
     public Zoya getZoya() { return zoya; }
     public void setZoya(Zoya v) { zoya = v; }
     public Yahoo getYahoo() { return yahoo; }
+    public Options getOptions() { return options; }
+    public void setOptions(Options v) { options = v; }
     public void setYahoo(Yahoo v) { yahoo = v; }
     public TradingView getTradingview() { return tradingview; }
     public void setTradingview(TradingView v) { tradingview = v; }

@@ -88,6 +88,26 @@ public final class SetupScore {
 
     public record Signal(String signal, List<String> notes) {}
 
+    /**
+     * For a Wait: the expected buy at the breakout level (the premarket or prior-day high; the price when it is
+     * already through), the stop at support (today's low or the put wall, at least 0.25 ATR under the buy), and the
+     * target at buy + 1 ATR, capped at the call wall above the buy. Null without a price and ATR.
+     */
+    public static double[] expected(StockRow r) {
+        double p = Num.d(r.price), atr = Num.d(r.atr);
+        if (!(p > 0) || !(atr > 0)) return null;
+        double bo = Num.d(r.breakoutLevel);
+        double buy = !Double.isNaN(bo) && bo > p ? bo : p;
+        double low = Num.d(r.dayLow);
+        double support = Double.isNaN(low) || low >= buy ? buy - 0.5 * atr : low;
+        GexLevels g = r.gex;
+        if (g != null && !Double.isNaN(g.putWall()) && g.putWall() < buy) support = Math.max(support, g.putWall());
+        double stop = Math.min(support, buy - 0.25 * atr);
+        double target = buy + atr;
+        if (g != null && !Double.isNaN(g.callWall()) && g.callWall() > buy) target = Math.min(target, g.callWall());
+        return new double[]{Num.round(buy, 4), Num.round(stop, 4), Num.round(target, 4)};
+    }
+
     /** Strong Uptrend or Early Bullish Reversal. */
     public static boolean longTrend(StockRow r) {
         return TrendClassifier.STRONG.equals(r.trendClass) || TrendClassifier.BULL_REV.equals(r.trendClass);

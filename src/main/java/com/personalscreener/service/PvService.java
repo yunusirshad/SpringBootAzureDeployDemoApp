@@ -42,6 +42,10 @@ public class PvService {
         public PvConfirm.Rules rules;
         public String entryDate, signalDate, barDate;
         public List<PvConfirm.Trade> trades = List.of();
+        /** WAIT / READY TO BUY: the close that would fire the BUY, its stop and target. */
+        public PvConfirm.Expected expected;
+        /** The exit target: for an open or planned trade, the first close above the entry. */
+        public Double target;
         public String error;
     }
 
@@ -254,6 +258,8 @@ public class PvService {
         r.sma200 = num(res.sma200());
         r.atr = num(res.atr());
         r.trades = res.trades();
+        r.expected = res.expected();
+        r.target = r.entry;   // TAKE PROFIT is the first close above the entry
         return r;
     }
 

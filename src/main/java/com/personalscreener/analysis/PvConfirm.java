@@ -75,7 +75,21 @@ public final class PvConfirm {
                          Double stop, Double exit, LocalDate entryDate, Integer barsHeld, LocalDate signalDate,
                          double rsi, double volPct, Rules rules, boolean nearSetup, String note,
                          LocalDate barDate, double close, double sma50, double sma200, double atr,
-                         List<Trade> trades) {}
+                         List<Trade> trades, Expected expected) {
+        Result withExpected(Expected e) {
+            return new Result(status, exitReason, trendUp, entry, entryEstimated, stop, exit, entryDate, barsHeld, signalDate,
+                    rsi, volPct, rules, nearSetup, note, barDate, close, sma50, sma200, atr, trades, e);
+        }
+    }
+
+    /**
+     * For WAIT and READY TO BUY in an uptrend: the close that would fire the BUY, its stop, and a target.
+     * {@code buy} is the highest next close that puts RSI(n) under the buy level (today's close when it already is);
+     * {@code stop} is buy - ATR multiple x ATR; {@code target} is the 5-day average including that close (where an
+     * RSI(2) dip usually reverts to; buy + 0.5 ATR when that is not above the buy). The trade itself still exits on the
+     * first close above the entry. {@code needs} lists what else has to hold.
+     */
+    public record Expected(double buy, double stop, double target, double dropPct, List<String> needs) {}
 
     private PvConfirm() {}
 
@@ -146,7 +160,7 @@ public final class PvConfirm {
             double atrSig = atr[last], e = live.open(), st = e - s.atrMult * atrSig;
             return new Result(Status.IN_TRADE, null, up, e, false, st, null, date(live), 1, barDate, rsi[last], volPct,
                     r, false, "Entered at today's open on the BUY from " + barDate, barDate, c[last], sma50[last],
-                    sma200[last], atrSig, recent);
+                    sma200[last], atrSig, recent, null);
         }
         // 2. an exit on the last completed bar comes before a new BUY on the same bar: get out first
         if (exitedOnLast != null) {
@@ -155,14 +169,14 @@ public final class PvConfirm {
                     t.signalDate(), rsi[last], volPct, r, false,
                     t.exitReason() + " on " + t.exitDate() + String.format(" · %+.2f%%", t.returnPct())
                             + (pending == last ? ". A new BUY also fired on this bar: re-enter at the next open" : ""),
-                    barDate, c[last], sma50[last], sma200[last], atr[last], recent);
+                    barDate, c[last], sma50[last], sma200[last], atr[last], recent, null);
         }
         // 3. a BUY waiting for the next open
         if (pending == last) {
             double atrSig = atr[last], est = c[last];
             return new Result(Status.BUY, null, up, est, true, est - s.atrMult * atrSig, null, null, null, barDate,
                     rsi[last], volPct, r, false, "All 4 rules passed on " + barDate + ". Enter at the next open; entry and stop are estimated from the close.",
-                    barDate, c[last], sma50[last], sma200[last], atrSig, recent);
+                    barDate, c[last], sma50[last], sma200[last], atrSig, recent, null);
         }
         // 4. an open trade
         if (inTrade) {
@@ -170,12 +184,12 @@ public final class PvConfirm {
             String note = "Held " + held + " of " + s.maxBars + " bars" + (up ? "" : ". Trend flipped to downtrend; tracking the exit only");
             if (live != null && live.low() <= stop) note += ". Stop touched today; confirms on the close";
             return new Result(Status.IN_TRADE, null, up, entry, false, stop, null, date(completed.get(entryIdx)), held, signalDate,
-                    rsi[last], volPct, r, false, note, barDate, c[last], sma50[last], sma200[last], atr[last], recent);
+                    rsi[last], volPct, r, false, note, barDate, c[last], sma50[last], sma200[last], atr[last], recent, null);
         }
         if (!up) {
             return new Result(Status.NA_DOWNTREND, null, false, null, false, null, null, null, null, null, rsi[last], volPct,
                     r, false, "Downtrend (SMA50 at or below SMA200): no new entries", barDate, c[last], sma50[last],
-                    sma200[last], atr[last], recent);
+                    sma200[last], atr[last], recent, null);
         }
         boolean othersPass = r.closeAboveSma() && r.spyAboveSma() && r.volBelowAvg();
         boolean ready = othersPass && !r.rsiBelow() && rsi[last] < s.rsiReadyBelow;
@@ -183,8 +197,54 @@ public final class PvConfirm {
         String note = ready ? "RSI(" + s.rsiLength + ") " + Math.round(rsi[last]) + ": one more down day can trigger the BUY"
                 : "Missing: " + missing(r, s);
         return new Result(ready ? Status.READY_TO_BUY : Status.WAIT, null, true, null, false, null, null, null, null, null,
-                rsi[last], volPct, r, near, note, barDate, c[last], sma50[last], sma200[last], atr[last], recent);
+                rsi[last], volPct, r, near, note, barDate, c[last], sma50[last], sma200[last], atr[last], recent, null)
+                .withExpected(expected(c, s, r, atr[last]));
     }
+
+    /** The close that would fire the BUY on the next bar, with its stop and target. */
+    static Expected expected(double[] c, Settings s, Rules r, double atr) {
+        int n = c.length, len = s.rsiLength;
+        double[] gl = wilder(c, len);
+        double g = gl[0], l = gl[1], close = c[n - 1], t = s.rsiBuyBelow;
+        // next bar with a drop d: g' = g(len-1)/len, l' = (l(len-1) + d)/len; RSI' < t  <=>  l' > g'(100-t)/t
+        double gNext = g * (len - 1) / len;
+        double need = len * gNext * (100 - t) / t - l * (len - 1);
+        double drop = r.rsiBelow() ? 0 : Math.max(0, need) + 1e-4 * close;
+        double buy = Math.max(0.01, close - drop);
+        double stop = buy - s.atrMult * atr;
+        double sum4 = 0;
+        for (int i = n - 4; i < n; i++) sum4 += c[i];
+        double target = (sum4 + buy) / 5;
+        if (!(target > buy)) target = buy + 0.5 * atr;
+
+        List<String> needs = new ArrayList<>();
+        double sumSma = 0;
+        for (int i = n - s.smaLength + 1; i < n; i++) sumSma += c[i];
+        double smaNext = (sumSma + buy) / s.smaLength;
+        if (buy <= smaNext) needs.add("a dip that deep would close under SMA" + s.smaLength + " (" + Math.round(smaNext * 100) / 100.0 + ")");
+        if (!r.spyAboveSma()) needs.add("SPY back above its SMA200");
+        needs.add("volume under " + fmt(s.volMaxPct) + "% of its " + s.volLength + "-day average that day");
+        return new Expected(round(buy), round(stop), round(target), round(drop / close * 100), needs);
+    }
+
+    /** Wilder average gain and loss at the last bar. */
+    static double[] wilder(double[] c, int n) {
+        double gain = 0, loss = 0;
+        for (int i = 1; i <= n && i < c.length; i++) {
+            double d = c[i] - c[i - 1];
+            if (d > 0) gain += d; else loss -= d;
+        }
+        gain /= n;
+        loss /= n;
+        for (int i = n + 1; i < c.length; i++) {
+            double d = c[i] - c[i - 1];
+            gain = (gain * (n - 1) + Math.max(d, 0)) / n;
+            loss = (loss * (n - 1) + Math.max(-d, 0)) / n;
+        }
+        return new double[]{gain, loss};
+    }
+
+    private static double round(double v) { return Math.round(v * 10_000) / 10_000.0; }
 
     static String missing(Rules r, Settings s) {
         List<String> m = new ArrayList<>();
@@ -211,7 +271,7 @@ public final class PvConfirm {
 
     private static Result empty(LocalDate d, String note) {
         return new Result(Status.WAIT, null, false, null, false, null, null, null, null, null, Double.NaN, Double.NaN,
-                new Rules(false, false, false, false), false, note, d, Double.NaN, Double.NaN, Double.NaN, Double.NaN, List.of());
+                new Rules(false, false, false, false), false, note, d, Double.NaN, Double.NaN, Double.NaN, Double.NaN, List.of(), null);
     }
 
     /** SPY above its SMA200, by date. */

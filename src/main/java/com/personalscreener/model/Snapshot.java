@@ -15,6 +15,8 @@ public class Snapshot {
     public int compliant;
     public boolean zoyaConfigured;
     public boolean chainsAvailable;
+    /** Why option chains are missing, when they are. */
+    public String chainNote;
     public String lastChainRun;
     public MarketPulse pulse = new MarketPulse();
     public List<StockRow> rows = new ArrayList<>();
