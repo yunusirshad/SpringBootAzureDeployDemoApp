@@ -59,16 +59,13 @@ public class MarketClock {
         return isTradingDay(t.toLocalDate()) && !lt.isBefore(PRE_OPEN) && lt.isBefore(POST_CLOSE);
     }
 
-    /** The screen refreshes from Monday 7:00 AM to Friday 8:00 PM ET. */
+    public static final LocalTime REFRESH_START = LocalTime.of(7, 0), REFRESH_END = LocalTime.of(16, 0);
+
+    /** The screen refreshes on trading days from 7:00 AM to 4:00 PM ET, both runs included. */
     public boolean inRefreshWindow(ZonedDateTime t) {
-        DayOfWeek w = t.getDayOfWeek();
-        LocalTime lt = t.toLocalTime();
-        return switch (w) {
-            case SATURDAY, SUNDAY -> false;
-            case MONDAY -> !lt.isBefore(LocalTime.of(7, 0));
-            case FRIDAY -> lt.isBefore(POST_CLOSE);
-            default -> true;
-        };
+        if (!isTradingDay(t.toLocalDate())) return false;
+        LocalTime lt = t.toLocalTime().withSecond(0).withNano(0);
+        return !lt.isBefore(REFRESH_START) && !lt.isAfter(REFRESH_END);
     }
 
     public boolean inRefreshWindow() { return inRefreshWindow(now()); }

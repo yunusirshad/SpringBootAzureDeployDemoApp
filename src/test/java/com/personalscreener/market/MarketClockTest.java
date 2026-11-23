@@ -21,9 +21,12 @@ class MarketClockTest {
         assertFalse(clock.inRefreshWindow(et(2026, 11, 22, 12, 0)));   // Sunday
         assertFalse(clock.inRefreshWindow(et(2026, 11, 23, 6, 59)));   // Monday before 7
         assertTrue(clock.inRefreshWindow(et(2026, 11, 23, 7, 0)));
-        assertTrue(clock.inRefreshWindow(et(2026, 11, 25, 2, 0)));     // midweek overnight
-        assertTrue(clock.inRefreshWindow(et(2026, 11, 27, 19, 59)));   // Friday
-        assertFalse(clock.inRefreshWindow(et(2026, 11, 27, 20, 0)));
+        assertTrue(clock.inRefreshWindow(et(2026, 11, 23, 7, 15)));
+        assertTrue(clock.inRefreshWindow(et(2026, 11, 23, 16, 0)));    // the 4:00 PM run
+        assertFalse(clock.inRefreshWindow(et(2026, 11, 23, 16, 15)));
+        assertFalse(clock.inRefreshWindow(et(2026, 11, 25, 2, 0)));    // overnight
+        assertFalse(clock.inRefreshWindow(et(2026, 11, 26, 10, 0)));   // Thanksgiving
+        assertTrue(clock.inRefreshWindow(et(2026, 11, 27, 15, 45)));   // Friday
     }
 
     @Test

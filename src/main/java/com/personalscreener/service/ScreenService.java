@@ -87,8 +87,8 @@ public class ScreenService {
         pool.submit(() -> refresh(gexCache.isEmpty()));
     }
 
-    /** Full screen every 30 minutes inside the Monday 7:00 AM - Friday 8:00 PM ET window. */
-    @Scheduled(cron = "0 */30 * * * *", zone = "America/New_York")
+    /** Full screen every 15 minutes on trading days: 7:00, 7:15, ... 4:00 PM ET. */
+    @Scheduled(cron = "0 */15 * * * *", zone = "America/New_York")
     public void scheduledRefresh() {
         if (clock.inRefreshWindow()) refresh(false);
     }

@@ -10,7 +10,7 @@ Tabs: **Screen**, **Alerts**, **Analyze** (SEC EDGAR results), **Technicals**, *
 mvn spring-boot:run
 ```
 
-Open http://localhost:8080. The first screen runs at startup and then every 30 minutes, Monday 7:00 AM to Friday 8:00 PM ET.
+Open http://localhost:8080. The first screen runs at startup and then every 15 minutes on trading days from 7:00 AM to 4:00 PM ET (7:00, 7:15, … 4:00).
 
 ## Settings
 

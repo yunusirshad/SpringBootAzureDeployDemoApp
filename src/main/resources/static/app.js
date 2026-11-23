@@ -120,7 +120,7 @@
     renderChips(s.filters || {});
     const exch = (s.filters?.exchanges || ['NASDAQ', 'NYSE']).map((e) => e === 'NASDAQ' ? 'Nasdaq' : e).join(' and ');
     const run = data.running ? ' · screening now…' : '';
-    $('#statusLine').textContent = `${exch} · ${s.compliant ?? 0} compliant of ${s.passedFilters ?? 0} · ${etTime(s.generatedAt)} · refreshes Monday 7:00 AM–Friday 8:00 PM ET${run}`;
+    $('#statusLine').textContent = `${exch} · ${s.compliant ?? 0} compliant of ${s.passedFilters ?? 0} · ${etTime(s.generatedAt)} · refreshes every 15 min, 7:00 AM–4:00 PM ET trading days${run}`;
     $('#statusLine').title = `${s.screened ?? 0} names from ${s.screenSource || '—'}; ${s.passedFilters ?? 0} passed every filter. Session: ${data.session}.`;
     const note = [];
     if (s.screenNote) note.push(s.screenNote);
@@ -695,7 +695,7 @@
     $('#detailsBody').innerHTML = `
       <h2>How the app works</h2>
       <h3>1. The screen</h3>
-      <p>Every 30 minutes from Monday 7:00 AM to Friday 8:00 PM ET, the app asks TradingView's screener for Nasdaq and NYSE common stocks that pass price, market cap, debt/equity and revenue growth. It then checks target upside, debt/assets, debt/capital and cash/debt itself from the same columns. Names you add are screened every run whether or not they pass.</p>
+      <p>Every 15 minutes on trading days from 7:00 AM to 4:00 PM ET (7:00, 7:15, … 4:00), the app asks TradingView's screener for Nasdaq and NYSE common stocks that pass price, market cap, debt/equity and revenue growth. It then checks target upside, debt/assets, debt/capital and cash/debt itself from the same columns. Names you add are screened every run whether or not they pass.</p>
       <h3>2. Compliance</h3>
       <p>Each name is looked up on its Zoya page (for example zoya.finance/stocks/mitk, which reads "MITK stock is Shariah-compliant") and the result is cached for 24 hours, so Zoya is asked about each ticker at most once a day. The cache is saved to disk and survives restarts. A ticker Zoya doesn't cover reads "Not covered"; a failed lookup reads "Not checked" and is retried after 15 minutes. "Show all" also shows names Zoya marks not compliant or questionable.</p>
       <h3>3. Quality</h3><p>${esc(qualityText)} Each clip is worth 20 points, with the score fading the further outside the clip a value sits (zero at ten times away). A missing quote scores the spread clip at half.</p>
