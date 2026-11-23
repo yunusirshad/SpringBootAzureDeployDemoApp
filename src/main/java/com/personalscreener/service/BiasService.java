@@ -138,7 +138,7 @@ public class BiasService {
         return m;
     }
 
-    Record compute() {
+    public Record compute() {
         ZonedDateTime now = clock.now();
         LocalDate today = now.toLocalDate();
         // a call made after 9:30 (a late start) still uses only what was known at 9:30
@@ -229,7 +229,7 @@ public class BiasService {
         return "Market bias " + r.date + ": " + r.bias.toUpperCase() + (r.bias.equals("Neutral") ? "" : " (" + r.strength + ")");
     }
 
-    static String body(Record r) {
+    public static String body(Record r) {
         StringBuilder b = new StringBuilder(r.summary).append('\n');
         for (MarketBias.Factor f : r.factors) {
             b.append(f.points() > 0 ? "▲ " : f.points() < 0 ? "▼ " : "· ").append(f.name()).append(": ").append(f.reading())
