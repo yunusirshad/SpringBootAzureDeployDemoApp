@@ -28,9 +28,12 @@ public class ApiController {
     private volatile Map<String, Object> lastBacktest;
     private final MarketClock clock;
     private final ScreenerProperties props;
+    private final ZoyaService zoya;
 
     public ApiController(ScreenService screen, WatchlistService watchlist, AlertService alerts, AnalyzeService analyze,
-                         TechnicalsService technicals, BacktestService backtest, SessionService sessions, MarketClock clock, ScreenerProperties props) {
+                         TechnicalsService technicals, BacktestService backtest, SessionService sessions, MarketClock clock,
+                         ScreenerProperties props, ZoyaService zoya) {
+        this.zoya = zoya;
         this.sessions = sessions;
         this.backtest = backtest;
         this.screen = screen;
@@ -182,12 +185,23 @@ public class ApiController {
         return sessions.read(symbol(ticker), tf, days);
     }
 
+    /** Zoya compliance for one ticker: from the day-long cache, or looked up now when it is missing or stale. */
+    @GetMapping("/zoya/{ticker}")
+    public ZoyaService.Entry zoya(@PathVariable String ticker, @RequestParam(defaultValue = "false") boolean refresh) {
+        return zoya.get(symbol(ticker), refresh);
+    }
+
+    /** Every cached Zoya result. */
+    @GetMapping("/zoya")
+    public Map<String, ZoyaService.Entry> zoyaCache() { return new java.util.TreeMap<>(zoya.all()); }
+
     @GetMapping("/config")
     public Map<String, Object> config() {
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("filters", props.getFilters());
         m.put("quality", props.getQuality());
-        m.put("zoyaConfigured", !props.getZoya().getApiKey().isBlank());
+        m.put("zoyaConfigured", zoya.configured());
+        m.put("zoyaSource", zoya.source());
         m.put("maxAnalyzed", props.getMaxAnalyzed());
         return m;
     }

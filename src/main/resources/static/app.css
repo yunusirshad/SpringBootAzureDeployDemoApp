@@ -87,7 +87,8 @@ table.grid { width: 100%; border-collapse: collapse; font-size: 13px; }
 .datagrid small { color: var(--muted); font-size: 11px; display: block; }
 .extra { font-size: 12px; color: var(--muted); margin-top: 6px; }
 .up { color: var(--bull); } .down { color: var(--bear); }
-.zoya { font-size: 12px; font-weight: 600; white-space: nowrap; }
+.zoya { display: block; font-size: 12px; font-weight: 600; white-space: nowrap; text-decoration: none; }
+a.zoya:hover { text-decoration: underline; }
 .zoya.COMPLIANT { color: var(--bull); } .zoya.NON_COMPLIANT { color: var(--bear); }
 .zoya.QUESTIONABLE { color: var(--warn); } .zoya.NOT_CHECKED, .zoya.NOT_COVERED { color: var(--faint); }
 .meter { width: 120px; height: 6px; background: var(--meter); border-radius: 3px; overflow: hidden; margin: 4px 0; }

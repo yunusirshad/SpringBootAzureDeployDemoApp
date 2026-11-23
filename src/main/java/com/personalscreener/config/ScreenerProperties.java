@@ -95,11 +95,20 @@ public class ScreenerProperties {
     }
 
     public static class Zoya {
-        /** Zoya API key. Leave blank and every name shows "Not checked". */
+        /** "page" reads https://zoya.finance/stocks/{ticker} (no key needed); "api" uses the GraphQL API with apiKey. */
+        private String source = "page";
+        /** The stock page; the lower-case ticker is appended. */
+        private String pageUrl = "https://zoya.finance/stocks/";
+        /** Zoya API key, used only with source "api". */
         private String apiKey = "";
         private String url = "https://api.zoya.finance/graphql";
         /** Re-check a name after this many hours. */
         private int cacheHours = 24;
+
+        public String getSource() { return source; }
+        public void setSource(String v) { source = v; }
+        public String getPageUrl() { return pageUrl; }
+        public void setPageUrl(String v) { pageUrl = v; }
 
         public String getApiKey() { return apiKey; }
         public void setApiKey(String v) { apiKey = v; }

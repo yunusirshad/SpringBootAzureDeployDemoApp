@@ -48,6 +48,9 @@ screener:
     atr-pct-min: 3
     atr-pct-max: 12
   zoya:
+    # page: read https://zoya.finance/stocks/{ticker}; api: GraphQL with ZOYA_API_KEY
+    source: ${ZOYA_SOURCE:page}
+    page-url: https://zoya.finance/stocks/
     api-key: ${ZOYA_API_KEY:}
     url: ${ZOYA_API_URL:https://api.zoya.finance/graphql}
     cache-hours: 24

@@ -16,7 +16,8 @@ Open http://localhost:8080. The first screen runs at startup and then every 30 m
 
 | Variable | What it does |
 | --- | --- |
-| `ZOYA_API_KEY` | Zoya API key. Without it every name reads "Not checked" and no name can be the super core. |
+| `ZOYA_SOURCE` | `page` (default) reads `https://zoya.finance/stocks/<ticker>`, no key needed. `api` uses Zoya's GraphQL API instead. |
+| `ZOYA_API_KEY` | Zoya API key, used only with `ZOYA_SOURCE=api`. |
 | `ZOYA_API_URL` | Defaults to `https://api.zoya.finance/graphql` (use the sandbox URL while testing). |
 | `SCREENER_DATA_DIR` | Where the watchlist, alerts and caches live. Default `./data`. On Azure use `/home/data`. |
 | `SCREENER_SEC_USER_AGENT` | SEC asks for a name and contact email, e.g. `MyScreener you@example.com`. |
@@ -28,7 +29,7 @@ The filters, quality clips and fallback ticker list are in `src/main/resources/a
 ## What it does
 
 1. **Screen.** TradingView filters on price ($1.50–$20), market cap (over $300M), debt/equity (under 0.5) and revenue growth (over 5%). The app then checks target upside (over 25%), debt/assets (under 0.3), debt/capital (under 0.3) and cash/debt (over 1) from the same data. If TradingView can't be reached, it screens `screener.fallback-universe` instead and labels those names as not verified.
-2. **Zoya.** Compliance for every name, cached for 24 hours.
+2. **Zoya.** For every name the app reads its Zoya page, e.g. `https://zoya.finance/stocks/mitk` ("MITK stock is Shariah-compliant"), and caches the status for 24 hours in `zoya-cache.json`, so each ticker is looked up at most once a day, even across restarts. `GET /api/zoya/MITK` shows one ticker (`?refresh=true` looks it up again now); `GET /api/zoya` lists the cache.
 3. **Analysis.** Yahoo candles (completed only): 50/200-day averages, RSI, MACD, ADX with ±DI, stochastic, Bollinger position, ATR, the 1-hour 20 EMA, and trend on 15m, 1h and 4h candles.
 4. **Lists.**
    - **Top 10:** the largest 50-day-over-200-day gaps.

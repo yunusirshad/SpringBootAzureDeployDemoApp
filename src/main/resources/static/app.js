@@ -122,7 +122,7 @@
     $('#statusLine').title = `${s.screened ?? 0} names from ${s.screenSource || '—'}; ${s.passedFilters ?? 0} passed every filter. Session: ${data.session}.`;
     const note = [];
     if (s.screenNote) note.push(s.screenNote);
-    if (!s.zoyaConfigured) note.push('Zoya is not set up (ZOYA_API_KEY), so every name shows "Not checked" and no name can be the super core.');
+    if (!s.zoyaConfigured) note.push('Zoya is set to the API (ZOYA_SOURCE=api) but ZOYA_API_KEY is empty, so every name shows "Not checked" and no name can be the super core.');
     $('#screenNote').textContent = note.join(' ');
     $('#screenNote').classList.toggle('hidden', note.length === 0);
     renderPulse(s.pulse);
@@ -242,7 +242,7 @@
         <div class="meta">${earn}</div>
         <button class="ghost small datatoggle" data-toggle="${esc(r.symbol)}">${open ? 'Hide data' : 'Data'}</button>
         ${dataBlock}</td>
-      <td><div class="zoya ${esc(r.zoya)}">${esc(zoyaLabel[r.zoya] || r.zoya)}</div><div class="meta">${r.zoyaCheckedAt ? 'Last scanned ' + esc(etStamp(r.zoyaCheckedAt)) : ''}</div></td>
+      <td><a class="zoya ${esc(r.zoya)}" href="https://zoya.finance/stocks/${encodeURIComponent(String(r.symbol).toLowerCase())}" target="_blank" rel="noopener" title="Open on Zoya">${esc(zoyaLabel[r.zoya] || r.zoya)}</a><div class="meta">${r.zoyaCheckedAt ? 'Last scanned ' + esc(etStamp(r.zoyaCheckedAt)) : ''}</div></td>
       <td class="num"><b data-f="price">${money(r.price)}</b></td>
       <td class="num">${meter}</td>
       <td><span class="state ${esc(dir)}">${esc(r.state || '—')}</span></td>
@@ -693,7 +693,7 @@
       <h3>1. The screen</h3>
       <p>Every 30 minutes from Monday 7:00 AM to Friday 8:00 PM ET, the app asks TradingView's screener for Nasdaq and NYSE common stocks that pass price, market cap, debt/equity and revenue growth. It then checks target upside, debt/assets, debt/capital and cash/debt itself from the same columns. Names you add are screened every run whether or not they pass.</p>
       <h3>2. Compliance</h3>
-      <p>Each name is checked against Zoya and cached for a day. Without a Zoya API key every name reads "Not checked". "Show all" also shows names Zoya marks not compliant or questionable.</p>
+      <p>Each name is looked up on its Zoya page (for example zoya.finance/stocks/mitk, which reads "MITK stock is Shariah-compliant") and the result is cached for 24 hours, so Zoya is asked about each ticker at most once a day. The cache is saved to disk and survives restarts. A ticker Zoya doesn't cover reads "Not covered"; a failed lookup reads "Not checked" and is retried after 15 minutes. "Show all" also shows names Zoya marks not compliant or questionable.</p>
       <h3>3. Quality</h3><p>${esc(qualityText)} Each clip is worth 20 points, with the score fading the further outside the clip a value sits (zero at ten times away). A missing quote scores the spread clip at half.</p>
       <h3>4. The lists</h3>
       <ul>
