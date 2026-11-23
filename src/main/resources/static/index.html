@@ -45,13 +45,24 @@
 
   <div class="toolbar">
     <input id="search" type="search" placeholder="Search ticker" autocomplete="off">
+    <select id="signalFilter" aria-label="Signal">
+      <option value="act" selected>Signals: buy and sell</option>
+      <option value="buy">Signals: Buy now, Ready to buy</option>
+      <option value="sell">Signals: Sell now, Ready to sell</option>
+      <option value="HOLD">Signals: Hold</option>
+      <option value="WAIT">Signals: Wait</option>
+      <option value="">Signals: all</option>
+    </select>
     <select id="stateFilter" aria-label="Trend classification">
       <option value="">All trend classifications</option>
       <option>Bull initiation</option><option>Bull accumulation</option><option>Bull manipulation</option>
       <option>Bear initiation</option><option>Bear distribution</option><option>Bear manipulation</option>
     </select>
     <select id="sortBy" aria-label="Sort">
-      <option value="screen">Sort: session phase</option>
+      <option value="screen">Sort: best setup</option>
+      <option value="range">Sort: range meter (most room)</option>
+      <option value="rr">Sort: reward to risk</option>
+      <option value="phase">Sort: session phase</option>
       <option value="long">Sort: long score</option>
       <option value="quality">Sort: quality</option>
       <option value="breakout">Sort: closest to breakout</option>
@@ -77,8 +88,8 @@
   </div>
 
   <div class="card">
-    <div class="card-head"><h2>Core stocks <span class="count" id="coreCount">0</span></h2></div>
-    <p class="sub">Every name that passes the screen and has a trend to trade (Strong Uptrend, Early Bullish Reversal or Early Bearish Reversal), with no limit on how many. Sorted by the latest session's phase from the Sessions indicator: Bull Distribution first, then Absorption (bull, then bear), Bull Manipulation, Bull Accumulation, then everything else. Within a phase, the higher phase percent goes first, then the higher long score (trend class, 15m/1h/4h bias, 1h 20 EMA, +DI over −DI, MACD, RSI, quality, relative volume, Zoya, room to the call wall, earnings). Names you added that have no uptrend sit underneath.</p>
+    <div class="card-head"><h2>Core stocks <span class="count" id="coreCount">0</span></h2><div id="signalSummary" class="sigsum"></div></div>
+    <p class="sub">Every name that passes the screen and has a trend to trade (Strong Uptrend, Early Bullish Reversal or Early Bearish Reversal), with no limit on how many. Each name gets a signal: <b>Buy now</b>, <b>Ready to buy</b>, <b>Sell now</b>, <b>Ready to sell</b>, <b>Hold</b> or <b>Wait</b>, listed in that order (APP Details has the rules). The list shows the buy and sell signals unless you pick another in the toolbar. Within a signal, names are sorted by the setup score, low risk and high reward: room left on the range meter (25), reward to risk from support to target (25), the latest session phase (20) and the long score (30). The <b>super stock</b> is the best name that is compliant, clear of earnings, under 100% of its ATR range and in a Strong Uptrend or Early Bullish Reversal; it stays at the top whatever the sort. Names you added that have no uptrend sit underneath.</p>
     <form id="addForm" class="addrow">
       <input id="addInput" placeholder="Ticker" aria-label="Ticker" autocomplete="off">
       <button type="submit">Add</button>

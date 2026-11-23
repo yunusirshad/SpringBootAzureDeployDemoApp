@@ -31,6 +31,7 @@
   const etTime = (iso) => iso ? new Date(iso).toLocaleTimeString('en-US', { timeZone: 'America/New_York', hour: 'numeric', minute: '2-digit', second: '2-digit' }) : '—';
   const etStamp = (iso) => iso ? new Date(iso).toLocaleString('en-US', { timeZone: 'America/New_York', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) + ' ET' : '—';
   const arrow = (t) => t > 0 ? '↑' : t < 0 ? '↓' : '–';
+  const SIGNAL = { BUY_NOW: 'Buy now', READY: 'Ready to buy', SELL_NOW: 'Sell now', READY_SELL: 'Ready to sell', HOLD: 'Hold', WAIT: 'Wait' };
   const TREND = { STRONG_UPTREND: 'Strong Uptrend', EARLY_BULLISH_REVERSAL: 'Early Bullish Reversal', EARLY_BEARISH_REVERSAL: 'Early Bearish Reversal', NO_UPTREND: 'No Uptrend' };
   const zoyaLabel = { COMPLIANT: 'Compliant', NON_COMPLIANT: 'Not compliant', QUESTIONABLE: 'Questionable', NOT_COVERED: 'Not covered', NOT_CHECKED: 'Not checked' };
 
@@ -63,7 +64,7 @@
   });
 
   // ---------- controls (remembered per viewer) ----------
-  const controls = ['showAll', 'search', 'stateFilter', 'sortBy', 'gexState', 'gexBias', 'gexSide'];
+  const controls = ['showAll', 'search', 'signalFilter', 'stateFilter', 'sortBy', 'gexState', 'gexBias', 'gexSide'];
   const saved = store.get('controls', {});
   controls.forEach((id) => {
     const el = $('#' + id);
@@ -90,7 +91,12 @@
     const showAll = $('#showAll').checked;
     const q = $('#search').value.trim().toUpperCase();
     const st = $('#stateFilter').value;
+    const sf = $('#signalFilter').value;
+    const sigOk = (sig) => !sf || (sf === 'act' ? sig !== 'HOLD' && sig !== 'WAIT'
+      : sf === 'buy' ? sig === 'BUY_NOW' || sig === 'READY'
+      : sf === 'sell' ? sig === 'SELL_NOW' || sig === 'READY_SELL' : sig === sf);
     return rows.filter((r) => {
+      if (r.list === 'CORE' && !sigOk(r.signal || 'WAIT')) return false;
       if (!showAll && (r.zoya === 'NON_COMPLIANT' || r.zoya === 'QUESTIONABLE')) return false;
       if (q && !r.symbol.includes(q) && !(r.name || '').toUpperCase().includes(q)) return false;
       if (st && r.state !== st) return false;
@@ -104,13 +110,17 @@
     const cmp = {
       screen: (a, b) => (a.rank || 999) - (b.rank || 999),
       long: (a, b) => (b.longScore || 0) - (a.longScore || 0) || (a.rank || 999) - (b.rank || 999),
+      range: (a, b) => (isNum(a.rangeUsedPct) ? a.rangeUsedPct : 1e9) - (isNum(b.rangeUsedPct) ? b.rangeUsedPct : 1e9),
+      rr: (a, b) => v(b.rewardRisk) - v(a.rewardRisk),
+      phase: (a, b) => (a.sessionGroup || 9) - (b.sessionGroup || 9) || (b.sessionPct || 0) - (a.sessionPct || 0),
       quality: (a, b) => b.qualityScore - a.qualityScore,
       breakout: (a, b) => (isNum(a.toBreakoutPct) ? Math.max(0, a.toBreakoutPct) : 1e9) - (isNum(b.toBreakoutPct) ? Math.max(0, b.toBreakoutPct) : 1e9),
       change: (a, b) => v(b.changePct) - v(a.changePct),
       rvol: (a, b) => v(b.relVol) - v(a.relVol),
       ticker: (a, b) => a.symbol.localeCompare(b.symbol),
     }[by] || (() => 0);
-    return [...rows].sort(cmp);
+    // the super stock stays on top whatever the sort
+    return [...rows].sort((a, b) => (b.superStock ? 1 : 0) - (a.superStock ? 1 : 0) || cmp(a, b));
   }
 
   function render() {
@@ -132,6 +142,11 @@
     const vis = visible(rows);
     const core = sorted(vis.filter((r) => r.list === 'CORE'));
     $('#coreCount').textContent = core.length;
+    const allCore = rows.filter((r) => r.list === 'CORE');
+    $('#signalSummary').innerHTML = Object.keys(SIGNAL).map((k) => {
+      const n = allCore.filter((r) => (r.signal || 'WAIT') === k).length;
+      return n ? `<span class="sig ${k}">${SIGNAL[k]} ${n}</span>` : '';
+    }).join('');
 
     // GEX levels: every listed name, narrowed by state / bias / side
     const gs = $('#gexState').value, gb = $('#gexBias').value, gd = $('#gexSide').value;
@@ -139,7 +154,9 @@
       .filter((r) => (!gs || (r.state || '').startsWith(gs)) && (!gb || r.bias === gb) && (!gd || r.side === gd)));
     $('#gexTable').innerHTML = table(gex, false, 'No names match this state, bias, or side.');
 
-    $('#coreTable').innerHTML = table(core, true, 'No names qualify yet.');
+    $('#coreTable').innerHTML = table(core, true, $('#signalFilter').value
+      ? 'No names have this signal right now. Pick "Signals: all" in the toolbar to see every name.'
+      : 'No names qualify yet.');
 
     const noUp = rows.filter((r) => r.userAdded && r.list === 'NO_UPTREND');
     const wlMissing = (data.watchlist || []).filter((t) => !rows.some((r) => r.symbol === t));
@@ -221,12 +238,17 @@
     const expiry = g ? `${esc(g.expiry || '—')}<span class="pct">${g.expiries > 1 ? g.expiries + ' expiries' : '1 expiry'}${g.asOf ? ' · ' + (g.asOf === today ? 'today' : '<span class="warnline">as of ' + esc(g.asOf) + '</span>') : ''}</span>` : 'No chain';
     const biasCls = r.bias === 'Bullish' ? 'bull' : r.bias === 'Bearish' ? 'bear' : 'mixed';
     const book = g ? `book ${big(g.totalOi)} · calls ${big(g.callOi)} · puts ${big(g.putOi)} · L/S ${fix(g.callPutRatio)}` : 'book – · calls – · puts – · L/S –';
-    return `<tr data-symbol="${esc(r.symbol)}" class="tc ${esc(r.trendClass || 'NO_UPTREND')}" title="${esc(TREND[r.trendClass] || 'No Uptrend')}">
+    return `<tr data-symbol="${esc(r.symbol)}" class="tc ${esc(r.trendClass || 'NO_UPTREND')}${r.superStock ? ' superrow' : ''}" title="${esc(TREND[r.trendClass] || 'No Uptrend')}">
       <td>${esc(r.exchange || '')}</td>
       <td><div><a href="#" class="tkr" data-ses="${esc(r.symbol)}" title="Open the session analysis for ${esc(r.symbol)}">${esc(r.symbol)}</a>${r.userAdded ? '<span class="added">You added</span>' : ''}</div>
         <div class="cname">${esc(r.name || '')}</div>
         <div><span class="tag ${r.side === 'Long' ? 'long' : 'short'}">${esc(r.side || '—')}</span>${q}</div>
-        <div><span class="tcbadge">${esc(TREND[r.trendClass] || 'No Uptrend')}</span>${r.list === 'CORE' ? ` <span class="lscore" title="${esc((r.longScoreParts || []).join(' · '))}">#${r.rank} · Long score ${r.longScore}</span>` : ''}</div>
+        <div><span class="tcbadge">${esc(TREND[r.trendClass] || 'No Uptrend')}</span></div>
+        ${r.list === 'CORE' ? `<div class="sigline"><span class="sig ${esc(r.signal || 'WAIT')}">${esc(SIGNAL[r.signal] || 'Wait')}</span>${(r.signalNotes || []).length ? `<span class="signotes">${esc(r.signalNotes.join(' · '))}</span>` : ''}</div>` : ''}
+        ${r.superStock ? '<div class="superbadge">★ Super stock · lowest risk, highest reward</div>' : ''}
+        ${r.list === 'CORE' ? `<div class="setup"><span class="lscore" title="${esc((r.setupParts || []).join(' · '))}">#${r.rank} · Setup ${r.setupScore}</span>
+          <span title="${esc((r.longScoreParts || []).join(' · '))}">Long ${r.longScore}</span>
+          ${isNum(r.rewardRisk) ? `<span title="Risk to ${money(r.setupStop)} (today's low or the put wall), target ${money(r.setupTarget)} (low + 1 ATR, or the call wall)">R:R <b class="${r.rewardRisk >= 2 ? 'up' : r.rewardRisk < 1 ? 'down' : ''}">${fix(r.rewardRisk, 1)}</b> · risk ${fix(r.riskPct, 1)}% · reward ${fix(r.rewardPct, 1)}%</span>` : ''}</div>` : ''}
         <div class="sphase ${esc((r.sessionPhase || '').split(' ')[0])}" data-ses="${esc(r.symbol)}" title="${esc(r.sessionScores || '')} · click for the session analysis">${r.sessionPhase
           ? `${esc(r.sessionName)}${r.sessionLive ? ' (live)' : ''} · <b>${r.sessionPct}% ${esc(r.sessionPhase)}</b>`
           : 'Session phase —'}</div>
@@ -701,7 +723,19 @@
       <h3>3. Quality</h3><p>${esc(qualityText)} Each clip is worth 20 points, with the score fading the further outside the clip a value sits (zero at ten times away). A missing quote scores the spread clip at half.</p>
       <h3>4. The lists</h3>
       <ul>
-        <li><b>Core</b>: every name that passes the screen and is not No Uptrend, with no limit on how many. It is sorted by the latest session's phase (the Sessions indicator on 5-minute candles; pre-market or New York for stocks, a live session once it has 30 minutes): Bull Distribution, Bull Absorption, Bear Absorption, Bull Manipulation, Bull Accumulation, then everything else. Within a phase the higher percent goes first, then the higher long score. The long score (0–100) is: trend class (Strong Uptrend 35, Early Bullish Reversal 25, Early Bearish Reversal 5), 15m/1h/4h bias (Bullish 10, Mixed 5), above the 1h 20 EMA 5, +DI over −DI 10, MACD up 5, RSI 50–70 5 (40–50 or 70–80: 2), quality score ÷ 10, relative volume 1× or more 5, Zoya compliant 5, room to the call wall 10 (5 if under it by less than 1 ATR), and −15 with earnings inside 3 trading days. Ties go to the wider 50-day-over-200-day gap. Names you added without an uptrend sit underneath.</li>
+        <li><b>Core</b>: every name that passes the screen and is not No Uptrend, with no limit on how many, sorted by the <b>setup score</b> (0–100, low risk and high reward), re-ranked on every price tick:
+          <b>range meter</b> 25 (0% of the ATR used scores 25, 100% or more scores 0);
+          <b>reward to risk</b> 25 (risk from the price to support, the higher of today's low and the put wall, at least ¼ ATR; reward up to today's low + 1 ATR, capped at the call wall; 3:1 or better scores 25);
+          <b>session phase</b> 20 (the latest pre-market or New York session from the Sessions indicator: Bull Distribution 20, Bull Absorption 16, Bear Absorption 12, Bull Manipulation 10, Bull Accumulation 8, times its percent);
+          <b>long score</b> 30 (the long score × 0.3).
+          Names are grouped by signal first (Buy now, Ready to buy, Sell now, Ready to sell, Hold, Wait), then by the setup score. The <b>super stock</b> is the best Buy now name (or Ready to buy when there is no Buy now). It stays first whatever the sort.</li>
+        <li><b>Signals</b>. Sell signals are about leaving a long and are checked first.
+          <b>Sell now</b>: an Early Bearish Reversal below the 1h 20 EMA with a bias that is not Bullish; or the price at or above the call wall; or 100% of the ATR range used into a Bear session of 60% or more.
+          <b>Ready to sell</b>: an Early Bearish Reversal; below the 1h 20 EMA with a Bearish bias; 100% of the ATR range used; earnings inside 3 trading days; or a Bear Distribution or Bear Manipulation session of 70% or more.
+          <b>Buy now</b>: Strong Uptrend or Early Bullish Reversal, Zoya compliant, bias not Bearish, through the breakout level, above the 1h 20 EMA, the latest session a Bull phase, reward to risk 1.5 or better and under 80% of the range used.
+          <b>Ready to buy</b>: the same trend, compliance and bias, reward to risk 1 or better, and above the 1h 20 EMA or within 3% of the breakout.
+          <b>Hold</b>: a Strong Uptrend or Early Bullish Reversal still intact but not a fresh entry. <b>Wait</b>: anything else. The note next to each signal says why, or what a Buy now still needs.
+          The long score (0–100) is: trend class (Strong Uptrend 35, Early Bullish Reversal 25, Early Bearish Reversal 5), 15m/1h/4h bias (Bullish 10, Mixed 5), above the 1h 20 EMA 5, +DI over −DI 10, MACD up 5, RSI 50–70 5 (40–50 or 70–80: 2), quality score ÷ 10, relative volume 1× or more 5, Zoya compliant 5, room to the call wall 10 (5 if under it by less than 1 ATR), and −15 with earnings inside 3 trading days. Ties go to the wider 50-day-over-200-day gap. Names you added without an uptrend sit underneath.</li>
       </ul>
       <h3>5. Readings on each row</h3>
       <ul>

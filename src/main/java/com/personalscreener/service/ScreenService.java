@@ -3,6 +3,7 @@ package com.personalscreener.service;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.personalscreener.analysis.GexCalculator;
 import com.personalscreener.analysis.LongScore;
+import com.personalscreener.analysis.SetupScore;
 import com.personalscreener.analysis.TrendClassifier;
 import com.personalscreener.analysis.Indicators;
 import com.personalscreener.config.ScreenerProperties;
@@ -266,30 +267,59 @@ public class ScreenService {
             r.gex = gexCache.get(r.symbol);
             r.userAdded = watchlist.contains(r.symbol);
         }
-        // Core: every screened or added name with a trend to trade (not No Uptrend), sorted by the latest
-        // session's phase (Bull Distribution, Absorption, Bull Manipulation, Bull Accumulation, then the rest),
-        // then that phase's percent, then the long score
+        // Core: screened or added names in an uptrend or a trend reversal. Buy now, Ready to buy, Sell now, Ready to
+        // sell, Hold, Wait; each group by the setup score (range meter, reward:risk, session phase, long score).
+        // The best Buy now (else Ready to buy) name is the super stock, on top.
         for (StockRow r : s.rows) {
             LongScore.Result ls = LongScore.of(r);
             r.longScore = ls.score();
             r.longScoreParts = ls.parts();
             r.sessionGroup = sessionGroup(r.sessionPhase);
+            SetupScore.Result su = SetupScore.of(r);
+            r.setupScore = su.score();
+            r.setupParts = su.parts();
+            r.rewardRisk = su.rewardRisk();
+            r.setupStop = su.stop();
+            r.setupTarget = su.target();
+            r.riskPct = su.riskPct();
+            r.rewardPct = su.rewardPct();
+            r.superStock = false;
+            SetupScore.Signal sig = SetupScore.signal(r);
+            r.signal = sig.signal();
+            r.signalNotes = sig.notes();
             r.list = r.userAdded ? "NO_UPTREND" : "SCREEN_ONLY";
             r.rank = 0;
         }
         List<StockRow> core = s.rows.stream()
-                .filter(r -> (r.screenPass || r.userAdded) && !TrendClassifier.NONE.equals(r.trendClass))
-                .sorted(Comparator.comparingInt((StockRow r) -> r.sessionGroup)
-                        .thenComparingInt(r -> r.sessionPct == null ? 0 : -r.sessionPct)
+                .filter(r -> (r.screenPass || r.userAdded) && SetupScore.listed(r))
+                .sorted(Comparator.comparingInt((StockRow r) -> signalOrder(r.signal))
+                        .thenComparingInt(r -> -r.setupScore)
                         .thenComparingInt(r -> -r.longScore)
                         .thenComparingDouble(r -> -Num.d(r.smaGapPct)))
-                .toList();
+                .collect(java.util.stream.Collectors.toCollection(ArrayList::new));
+        core.stream().filter(r -> SetupScore.BUY_NOW.equals(r.signal) || SetupScore.READY.equals(r.signal))
+                .findFirst().ifPresent(best -> {
+            best.superStock = true;
+            core.remove(best);
+            core.add(0, best);
+        });
         for (int i = 0; i < core.size(); i++) {
             core.get(i).list = "CORE";
             core.get(i).rank = i + 1;
         }
         s.compliant = (int) s.rows.stream().filter(r -> r.screenPass && "COMPLIANT".equals(r.zoya)).count();
         s.chainsAvailable = !gexCache.isEmpty();
+    }
+
+    static int signalOrder(String signal) {
+        return switch (signal == null ? "" : signal) {
+            case SetupScore.BUY_NOW -> 0;
+            case SetupScore.READY -> 1;
+            case SetupScore.SELL_NOW -> 2;
+            case SetupScore.READY_SELL -> 3;
+            case SetupScore.HOLD -> 4;
+            default -> 5;
+        };
     }
 
     /** Sort order of a session phase label such as "Bull Distribution". */

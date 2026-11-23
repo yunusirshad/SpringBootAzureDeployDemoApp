@@ -14,6 +14,17 @@ public class StockRow {
     /** 0-100, how good a long it is; the Core list is sorted by it. */
     public int longScore;
     public List<String> longScoreParts = new ArrayList<>();
+    /** 0-100, low risk and high reward; the Core list is sorted by it. */
+    public int setupScore;
+    public List<String> setupParts = new ArrayList<>();
+    /** Reward to risk from support (today's low or the put wall) to target (low + 1 ATR, or the call wall). */
+    public Double rewardRisk, setupStop, setupTarget, riskPct, rewardPct;
+    /** The best Buy now (or Ready to buy) name, always first in Core. */
+    public boolean superStock;
+    /** BUY_NOW, READY, HOLD, READY_SELL, SELL_NOW or WAIT. */
+    public String signal = "WAIT";
+    /** Why: the sell reasons, what a Buy now still needs, or why it is Hold or Wait. */
+    public List<String> signalNotes = new ArrayList<>();
 
     // screen
     public boolean screenPass;
