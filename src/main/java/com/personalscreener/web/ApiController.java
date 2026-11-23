@@ -29,11 +29,13 @@ public class ApiController {
     private final MarketClock clock;
     private final ScreenerProperties props;
     private final ZoyaService zoya;
+    private final PvService pv;
 
     public ApiController(ScreenService screen, WatchlistService watchlist, AlertService alerts, AnalyzeService analyze,
                          TechnicalsService technicals, BacktestService backtest, SessionService sessions, MarketClock clock,
-                         ScreenerProperties props, ZoyaService zoya) {
+                         ScreenerProperties props, ZoyaService zoya, PvService pv) {
         this.zoya = zoya;
+        this.pv = pv;
         this.sessions = sessions;
         this.backtest = backtest;
         this.screen = screen;
@@ -88,6 +90,7 @@ public class ApiController {
         m.put("pulse", s.pulse);
         m.put("rows", rows);
         m.put("alerts", screen.recentAlerts());
+        m.put("pvAlerts", pv.recentAlerts());
         m.put("generatedAt", s.generatedAt);
         m.put("running", screen.isRunning());
         return m;
@@ -194,6 +197,34 @@ public class ApiController {
     /** Every cached Zoya result. */
     @GetMapping("/zoya")
     public Map<String, ZoyaService.Entry> zoyaCache() { return new java.util.TreeMap<>(zoya.all()); }
+
+    // ---- PV Confirm ---------------------------------------------------------------------------
+
+    /** PV Confirm rows (uptrend and downtrend sections), SPY's state and the settings. */
+    @GetMapping("/pv")
+    public Map<String, Object> pv() {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("state", pv.state());
+        m.put("settings", pv.settings());
+        m.put("running", pv.isRunning());
+        return m;
+    }
+
+    @PostMapping("/pv/refresh")
+    public Map<String, Object> pvRefresh() { return Map.of("started", pv.refreshAsync()); }
+
+    @GetMapping("/pv/settings")
+    public com.personalscreener.analysis.PvConfirm.Settings pvSettings() { return pv.settings(); }
+
+    @PutMapping("/pv/settings")
+    public com.personalscreener.analysis.PvConfirm.Settings pvSaveSettings(@RequestBody com.personalscreener.analysis.PvConfirm.Settings s) {
+        var saved = pv.saveSettings(s);
+        pv.refreshAsync();
+        return saved;
+    }
+
+    @GetMapping("/pv/alerts")
+    public List<PvService.PvAlert> pvAlerts() { return pv.alerts(); }
 
     @GetMapping("/config")
     public Map<String, Object> config() {

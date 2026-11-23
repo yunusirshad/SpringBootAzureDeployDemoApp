@@ -37,9 +37,17 @@ The filters, quality clips and fallback ticker list are in `src/main/resources/a
    - RSI, MACD, ADX, stochastic and Bollinger position show on every row. They are readings, not filters.
 5. **GEX.** Each name's option chain is read once a day (8:00 AM ET on weekdays, or on the first screen a new name appears in). Open interest is summed by strike over the expiries in the next 45 days: the call wall is the strike with the most call open interest, the put wall the strike with the most put open interest, and King the strike with the largest net gamma. Expiry is the date holding the most open interest. Chains come from Yahoo and need its cookie session (`SCREENER_YAHOO_CRUMB=true`, the default).
 
+## PV Confirm Signals
+
+Nested under the trend check (uptrend = SMA50 above SMA200). Daily bars, long only.
+
+- **Uptrend:** close above SMA200, SPY above its SMA200, RSI(2) under 10 and volume under its 50-day average. All four on a completed bar is a **BUY** at the next open; stop = entry − 2.5 × ATR(14). Exits: **STOP** (low touches the stop), **TAKE PROFIT** (first close above the entry) or **TIME EXIT** (10 bars). Statuses: READY TO BUY (three rules pass and RSI(2) under 20), BUY, IN TRADE, SELL, WAIT; chips filter All, Ready to Buy, Buy, In Trade, Sell and Near Setup (3 of 4 rules).
+- **Downtrend:** no new entries (N/A – Downtrend). A trade opened in the uptrend is still tracked to its SELL after the trend flips, even if the name leaves the screen.
+- Today's bar counts from 4:15 PM ET, when each BUY, SELL and READY TO BUY is sent once as an alert. Thresholds live on the settings panel and in `pv-settings.json`.
+
 ## API
 
-`GET /api/screen` · `GET /api/prices` · `POST /api/refresh` · `GET|POST /api/watchlist` · `DELETE /api/watchlist/{t}` · `GET /api/watchlist/export` · `GET|POST /api/alerts` · `DELETE /api/alerts/{id}` · `GET /api/analyze/{t}` · `GET /api/technicals/{t}` · `GET /actuator/health`
+`GET /api/screen` · `GET /api/pv` · `POST /api/pv/refresh` · `GET|PUT /api/pv/settings` · `GET /api/pv/alerts` · `GET /api/prices` · `POST /api/refresh` · `GET|POST /api/watchlist` · `DELETE /api/watchlist/{t}` · `GET /api/watchlist/export` · `GET|POST /api/alerts` · `DELETE /api/alerts/{id}` · `GET /api/analyze/{t}` · `GET /api/technicals/{t}` · `GET /actuator/health`
 
 ## Deploy to Azure App Service
 

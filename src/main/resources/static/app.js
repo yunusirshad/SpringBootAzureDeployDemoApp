@@ -360,6 +360,7 @@
       data.running = p.running;
       if (finished || p.generatedAt !== data.snapshot.generatedAt) { loadScreen(); } else if (!document.activeElement?.closest('.toolbar,.gexfilters,#addForm')) { render(); }
       handleRang(p.alerts || []);
+      handlePvAlerts(p.pvAlerts || []);
     } catch { /* keep the last view */ }
   }
 
@@ -379,6 +380,142 @@
     if ($('#tab-alerts').classList.contains('active')) loadAlerts();
   }
 
+
+  // ---------- PV Confirm ----------
+  const PV_LABEL = { READY_TO_BUY: 'READY TO BUY', BUY: 'BUY', IN_TRADE: 'IN TRADE', SELL: 'SELL', WAIT: 'WAIT', NA_DOWNTREND: 'N/A – Downtrend' };
+  const PV_CHIPS = [['ALL', 'All'], ['READY_TO_BUY', 'Ready to Buy'], ['BUY', 'Buy'], ['IN_TRADE', 'In Trade'], ['SELL', 'Sell'], ['NEAR', 'Near Setup']];
+  const PV_ORDER = { BUY: 0, READY_TO_BUY: 1, IN_TRADE: 2, SELL: 3, WAIT: 4, NA_DOWNTREND: 5 };
+  let pv = null;
+  let pvChip = store.get('pvChip', 'ALL');
+
+  async function loadPv() {
+    try { pv = await api('api/pv'); renderPv(); } catch { /* keep the last view */ }
+  }
+
+  function pvChipMatch(r, chip) {
+    if (chip === 'ALL') return true;
+    if (chip === 'NEAR') return r.nearSetup && r.status !== 'IN_TRADE' && r.status !== 'SELL' && r.status !== 'BUY';
+    return r.status === chip;
+  }
+
+  function renderPv() {
+    if (!pv) return;
+    const st = pv.state || {};
+    const rows = st.rows || [];
+    if (pv.settings && !document.querySelector('.pvsettings').open) fillPvForm(pv.settings);
+    $('#pvStamp').textContent = st.generatedAt ? `Bar ${st.barDate || '—'} · ${st.dayComplete ? 'daily bar complete' : 'today still forming'} · run ${etStamp(st.generatedAt)}${pv.running ? ' · running…' : ''}` : (pv.running ? 'Running…' : 'Waiting for the first run');
+    $('#pvSpy').innerHTML = isNum(st.spyClose)
+      ? `SPY ${money(st.spyClose)} vs SMA200 ${money(st.spySma200)}: <b class="${st.spyAbove ? 'up' : 'down'}">${st.spyAbove ? 'above, the market rule passes' : 'below, no new BUY signals'}</b>${pv.settings && !pv.settings.spyFilter ? ' <span class="muted">(SPY rule switched off)</span>' : ''}`
+      : '';
+    const up = rows.filter((r) => r.section === 'UPTREND');
+    const down = rows.filter((r) => r.section !== 'UPTREND');
+    $('#pvUpCount').textContent = up.length;
+    $('#pvDownCount').textContent = down.length;
+    $('#pvChips').innerHTML = PV_CHIPS.map(([k, label]) => {
+      const n = up.filter((r) => pvChipMatch(r, k)).length;
+      return `<button type="button" role="tab" class="chip pvchip ${k}${pvChip === k ? ' on' : ''}" aria-selected="${pvChip === k}" data-pvchip="${k}">${label} <span class="n">${n}</span></button>`;
+    }).join('');
+    const sortRows = (list) => list.slice().sort((a, b) => (PV_ORDER[a.status] ?? 9) - (PV_ORDER[b.status] ?? 9)
+      || (b.nearSetup ? 1 : 0) - (a.nearSetup ? 1 : 0) || (a.rsi2 ?? 999) - (b.rsi2 ?? 999));
+    const upShown = sortRows(up.filter((r) => pvChipMatch(r, pvChip)));
+    $('#pvUpTable').innerHTML = pvTable(upShown, true, pvChip === 'ALL' ? 'No uptrend names yet.' : 'No uptrend names in this group right now.');
+    $('#pvDownTable').innerHTML = pvTable(sortRows(down), false, 'No downtrend names.');
+  }
+
+  function pvTable(rows, upSection, empty) {
+    const head = '<thead><tr><th>Stock</th><th class="num">Price</th><th>PV Status</th><th class="num">Entry</th><th class="num">Stop</th><th class="num">RSI(2)</th><th class="num">Volume vs Avg</th><th>Rules Passed</th></tr></thead>';
+    if (!rows.length) return head + `<tbody><tr class="empty"><td colspan="8">${esc(empty)}</td></tr></tbody>`;
+    const set = pv.settings || {};
+    return head + '<tbody>' + rows.map((r) => {
+      const na = r.status === 'NA_DOWNTREND';
+      const ru = r.rules || {};
+      const rule = (ok, label) => `<li class="${ok ? 'ok' : 'no'}">${ok ? '✓' : '✗'} ${esc(label)}</li>`;
+      const rulesCell = na ? '<span class="muted">—</span>' : `<b>${r.rulesPassed ?? 0}/4</b><ul class="pvrules">
+          ${rule(ru.closeAboveSma, 'Close > SMA' + (set.smaLength || 200))}
+          ${rule(ru.spyAboveSma, 'SPY > SMA200')}
+          ${rule(ru.rsiBelow, `RSI(${set.rsiLength || 2}) < ${set.rsiBuyBelow ?? 10}`)}
+          ${rule(ru.volBelowAvg, `Vol < ${set.volMaxPct ?? 100}% of ${set.volLength || 50}d avg`)}</ul>`;
+      const status = `<span class="pvst ${esc(r.status)}">${esc(PV_LABEL[r.status] || r.status)}</span>${r.exitReason ? `<div class="pvreason">${esc(r.exitReason)}${isNum(r.exit) ? ' at ' + money(r.exit) : ''}</div>` : ''}${r.nearSetup && r.status === 'WAIT' ? '<div class="pvreason near">Near setup</div>' : ''}`;
+      const entry = isNum(r.entry) ? `${money(r.entry)}<span class="pct">${r.entryEstimated ? 'est. next open' : esc(r.entryDate || '')}${isNum(r.barsHeld) ? ' · bar ' + r.barsHeld : ''}</span>` : '—';
+      const stop = isNum(r.stop) ? `${money(r.stop)}<span class="pct">${isNum(r.entry) && r.entry > 0 ? '−' + ((1 - r.stop / r.entry) * 100).toFixed(1) + '%' : ''}</span>` : '—';
+      const vol = isNum(r.volPct) ? `<span class="${r.volPct < (set.volMaxPct ?? 100) ? 'up' : ''}">${r.volPct.toFixed(0)}%</span>` : '—';
+      const rsi = isNum(r.rsi2) ? `<span class="${r.rsi2 < (set.rsiBuyBelow ?? 10) ? 'up' : r.rsi2 < (set.rsiReadyBelow ?? 20) ? 'warnline' : ''}">${r.rsi2.toFixed(1)}</span>` : '—';
+      return `<tr class="pvrow ${esc(r.status)}">
+        <td><a href="#" class="tkr" data-ses="${esc(r.symbol)}">${esc(r.symbol)}</a>${r.onScreen ? '' : ' <span class="added">Off screen</span>'}
+          <div class="cname">${esc(r.name || '')}</div>
+          ${r.error ? `<div class="meta warnline">${esc(r.error)}</div>` : r.note ? `<div class="meta">${esc(r.note)}</div>` : ''}</td>
+        <td class="num">${money(r.price)}</td>
+        <td>${status}</td>
+        <td class="num">${entry}</td>
+        <td class="num">${stop}</td>
+        <td class="num">${rsi}</td>
+        <td class="num">${vol}</td>
+        <td>${rulesCell}</td>
+      </tr>`;
+    }).join('') + '</tbody>';
+  }
+
+  document.addEventListener('click', (e) => {
+    const c = e.target.closest('[data-pvchip]');
+    if (!c) return;
+    pvChip = c.dataset.pvchip;
+    store.set('pvChip', pvChip);
+    renderPv();
+  });
+
+  $('#pvRefresh').addEventListener('click', async () => {
+    try { await api('api/pv/refresh', { method: 'POST' }); toast('PV Confirm is re-running.'); setTimeout(loadPv, 4000); } catch (err) { toast(err.message); }
+  });
+
+  const PV_DEFAULTS = { rsiLength: 2, rsiBuyBelow: 10, rsiReadyBelow: 20, smaLength: 200, volLength: 50, volMaxPct: 100, atrLength: 14, atrMult: 2.5, maxBars: 10, spyFilter: true, alerts: true };
+  function fillPvForm(sv) {
+    const f = $('#pvSettingsForm');
+    Object.entries(sv).forEach(([k, v]) => { const el = f.elements[k]; if (!el) return; if (el.type === 'checkbox') el.checked = !!v; else el.value = v; });
+  }
+  $('#pvDefaults').addEventListener('click', () => fillPvForm(PV_DEFAULTS));
+  $('#pvSettingsForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const f = e.target, body = {};
+    Object.keys(PV_DEFAULTS).forEach((k) => { const el = f.elements[k]; body[k] = el.type === 'checkbox' ? el.checked : Number(el.value); });
+    const msg = $('#pvSettingsMsg');
+    try {
+      await api('api/pv/settings', { method: 'PUT', body: JSON.stringify(body) });
+      msg.className = 'msg ok'; msg.textContent = 'Saved. Re-running…';
+      setTimeout(loadPv, 4000);
+    } catch (err) { msg.className = 'msg err'; msg.textContent = err.message; }
+  });
+
+  const seenPv = new Set(store.get('seenPv', []));
+  function handlePvAlerts(list) {
+    const fresh = list.filter((a) => !seenPv.has(a.id));
+    if (!fresh.length) return;
+    fresh.forEach((a) => {
+      seenPv.add(a.id);
+      const msg = `PV Confirm ${a.symbol}: ${PV_LABEL[a.status] || a.status}${a.reason ? ' — ' + a.reason : ''}`;
+      toast(msg);
+      try { if ('Notification' in window && Notification.permission === 'granted') new Notification('PV Confirm', { body: msg }); } catch { /* ignore */ }
+    });
+    store.set('seenPv', [...seenPv].slice(-300));
+    const b = $('#alertBadge');
+    b.textContent = fresh.length;
+    b.classList.remove('hidden');
+    loadPv();
+  }
+
+  async function loadPvAlerts() {
+    try {
+      const list = await api('api/pv/alerts');
+      $('#pvAlertTable').innerHTML = '<thead><tr><th>Date</th><th>Ticker</th><th>Signal</th><th class="num">Price</th><th class="num">Entry</th><th class="num">Stop</th><th>Why</th></tr></thead><tbody>'
+        + (list.map((a) => `<tr><td>${esc(etStamp(a.at))}</td><td><a href="#" class="tkr" data-ses="${esc(a.symbol)}">${esc(a.symbol)}</a></td>
+          <td><span class="pvst ${esc(a.status)}">${esc(PV_LABEL[a.status] || a.status)}</span></td><td class="num">${money(a.price)}</td>
+          <td class="num">${money(a.entry)}</td><td class="num">${money(a.stop)}</td><td class="meta">${esc(a.reason || '')}</td></tr>`).join('')
+          || '<tr class="empty"><td colspan="7">No PV Confirm alerts yet. They go out at 4:15 PM ET on trading days.</td></tr>') + '</tbody>';
+    } catch { /* ignore */ }
+  }
+
+  loadPv();
+  setInterval(loadPv, 60_000);
+
   // ---------- alerts ----------
   const describe = (a) => ({ ABOVE: `at or above ${money(a.level)}`, BELOW: `at or below ${money(a.level)}`, PCT_UP: `up ${a.level}%`, PCT_DOWN: `down ${a.level}%` }[a.type] || a.type);
 
@@ -391,6 +528,7 @@
       <td><button class="ghost small" data-del-alert="${esc(a.id)}">Delete</button></td></tr>`).join('');
     $('#alertTable').innerHTML = '<thead><tr><th>Ticker</th><th>Condition</th><th>Note</th><th>Status</th><th></th></tr></thead><tbody>'
       + (rows || '<tr class="empty"><td colspan="5">No alerts yet.</td></tr>') + '</tbody>';
+    loadPvAlerts();
   }
 
   $('#alertForm').addEventListener('submit', async (e) => {
@@ -745,6 +883,10 @@
         <li><b>To breakout</b>: the distance to the higher of today's premarket high and the prior day's high.</li>
         <li><b>Bias</b>: close against a rising or falling 20 EMA on completed 15-minute, 1-hour and 4-hour candles. More up than down is Bullish, more down is Bearish, otherwise Mixed.</li>
         <li><b>Trend class</b> (the row colour): from completed daily candles, using the 20 EMA and the 50- and 200-day averages only. <b>Strong Uptrend</b>: 50-day above the 200-day, close above the 50-day and the 20 EMA. <b>Early Bullish Reversal</b>: the 50-day crossed above the 200-day in the last 15 sessions, or the close reclaimed the 50-day and a rising 20 EMA while the 50-day is still below the 200-day. <b>Early Bearish Reversal</b>: 50-day above the 200-day but the close lost the 50-day, or sits under a falling 20 EMA. <b>No Uptrend</b>: anything else; fewer than 200 daily candles means no structure, so it stays No Uptrend.</li>
+        <li><b>PV Confirm Signals</b>: nested under the trend check (SMA50 above SMA200, unchanged), on daily bars, long only.
+          <b>Uptrend</b>: the four rules are close above SMA200, SPY above its SMA200, RSI(2) under 10 and volume under its 50-day average (the average includes the day). All four on a completed bar is a <b>BUY</b>; the trade enters at the next open, with the stop at entry − 2.5 × ATR(14) of the signal bar. <b>IN TRADE</b> until the first exit, checked on each completed bar from the entry bar on: <b>STOP</b> when the low touches the stop (filled at the stop, or the open on a gap below), <b>TAKE PROFIT</b> on the first close above the entry, <b>TIME EXIT</b> at the close of the 10th bar. The bar it exits on shows <b>SELL</b> with the reason; when a new BUY fires on the same bar, the SELL shows first and the note says so. <b>READY TO BUY</b>: the other three rules pass and RSI(2) is under 20 but not yet under 10. <b>Near Setup</b>: 3 of the 4 rules pass while flat. Everything else is <b>WAIT</b>.
+          <b>Downtrend</b>: no new entries, shown as N/A – Downtrend. A trade opened in the uptrend is still tracked to its SELL after the flip, and stays listed even if the name drops off the screen.
+          The state is rebuilt by replaying the last 40 daily bars. Today's bar counts as complete from 4:15 PM ET; before that the live bar's open is only used to fill a BUY from the day before. It runs a few minutes after each screen and at 4:15 PM ET, when every BUY, SELL and READY TO BUY is sent once as an alert. The settings panel changes the thresholds.</li>
         <li><b>RSI, MACD, ADX, Stoch, Band</b>: daily readings on every row (14-day RSI, 12/26/9 MACD, 14-day ADX with its direction, 14/3 stochastic, position inside the 20-day 2σ Bollinger band). They are readings, not filters.</li>
         <li><b>GEX levels</b>: every listed stock's option chain is read once a day (8:00 AM ET on weekdays, and on the first screen for a name that is new that day). Open interest is summed by strike across the expiries in the next 45 days. Call wall: the strike with the most call open interest. Put wall: the strike with the most put open interest. King: the strike with the largest net gamma exposure. Each shows its open interest and its share of all open interest in the window. Expiry is the date holding the most open interest; "as of" flags a chain that could not be refreshed today.</li>
         <li><b>Session phases</b> (Sessions tab): Asia 6 PM–2 AM, London 2–8 AM, New York 8 AM–5 PM ET, each scored 0–100% for accumulation (tight, quiet balance), manipulation (sweeps the prior session's high or low and closes back inside), absorption (heavy effort, no progress) and distribution (a one-way expansion). Scored on 5-minute candles only, so every timeframe shows the same boxes. Bull/Bear comes from the close location, the swept side or the body direction.</li>
@@ -754,6 +896,7 @@
       <ul>
         <li><code>GET /api/screen</code>: the full snapshot, every row and the market line.</li>
         <li><code>GET /api/prices</code>: the light payload the page polls every 10 seconds.</li>
+        <li><code>GET /api/pv</code>: PV Confirm rows (uptrend and downtrend), SPY's state and the settings. <code>POST /api/pv/refresh</code> re-runs it; <code>GET|PUT /api/pv/settings</code> reads or saves the settings; <code>GET /api/pv/alerts</code> lists the 4:15 PM alerts.</li>
         <li><code>POST /api/refresh</code>: run the screen now.</li>
         <li><code>GET /api/watchlist</code>, <code>POST /api/watchlist {"tickers":"SRTA, AUR"}</code>, <code>DELETE /api/watchlist/{ticker}</code>, <code>GET /api/watchlist/export</code>.</li>
         <li><code>GET /api/alerts</code>, <code>POST /api/alerts {"symbol","type":"ABOVE|BELOW|PCT_UP|PCT_DOWN","level","note"}</code>, <code>DELETE /api/alerts/{id}</code>.</li>

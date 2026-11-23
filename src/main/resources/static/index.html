@@ -101,6 +101,38 @@
     <div class="tablewrap"><table class="grid" id="coreTable"></table></div>
     <div id="noUptrend" class="nouptrend"></div>
   </div>
+
+  <div class="card" id="pvCard">
+    <div class="card-head"><h2>PV Confirm Signals</h2>
+      <div class="pvhead"><span class="muted small" id="pvStamp"></span><button id="pvRefresh" class="ghost small" type="button">Re-run</button></div></div>
+    <p class="sub">Nested under the trend check (uptrend = SMA50 above SMA200, unchanged). Daily bars, long only. In an uptrend the four PV Confirm rules are: close above SMA200, SPY above its SMA200, RSI(2) under 10, and volume under its 50-day average. All four on a completed daily bar is a BUY at the next open, with the stop at entry − 2.5 × ATR(14). A trade exits on the first profitable close (TAKE PROFIT), a touch of the stop (STOP) or after 10 bars (TIME EXIT). Today's bar counts from 4:15 PM ET, when the alerts go out.</p>
+    <div id="pvSpy" class="pvspy"></div>
+    <details class="pvsettings">
+      <summary>Settings</summary>
+      <form id="pvSettingsForm" class="pvform">
+        <label>RSI length<input name="rsiLength" type="number" min="2" max="14" step="1"></label>
+        <label>RSI buy below<input name="rsiBuyBelow" type="number" min="1" max="49" step="0.5"></label>
+        <label>RSI ready below<input name="rsiReadyBelow" type="number" min="1" max="59" step="0.5"></label>
+        <label>SMA length (close rule)<input name="smaLength" type="number" min="50" max="250" step="1"></label>
+        <label>Volume average days<input name="volLength" type="number" min="5" max="200" step="1"></label>
+        <label>Volume under % of average<input name="volMaxPct" type="number" min="1" max="300" step="1"></label>
+        <label>ATR length<input name="atrLength" type="number" min="2" max="50" step="1"></label>
+        <label>Stop: ATR multiple<input name="atrMult" type="number" min="0.1" max="10" step="0.1"></label>
+        <label>Time exit (bars)<input name="maxBars" type="number" min="1" max="60" step="1"></label>
+        <label class="check"><input name="spyFilter" type="checkbox"> SPY above its SMA200</label>
+        <label class="check"><input name="alerts" type="checkbox"> Alerts after 4:15 PM ET</label>
+        <div class="pvformbtns"><button type="submit">Save and re-run</button><button type="button" class="ghost small" id="pvDefaults">Defaults</button><span id="pvSettingsMsg" class="msg"></span></div>
+      </form>
+    </details>
+
+    <h3 class="pvh">Uptrend <span class="muted">· SMA50 above SMA200</span> <span class="count" id="pvUpCount">0</span></h3>
+    <div class="chips pvchips" id="pvChips" role="tablist" aria-label="PV status"></div>
+    <div class="tablewrap"><table class="grid pvgrid" id="pvUpTable"></table></div>
+
+    <h3 class="pvh">Downtrend <span class="muted">· SMA50 at or below SMA200</span> <span class="count" id="pvDownCount">0</span></h3>
+    <p class="sub">PV Confirm does not look for new entries here. A trade opened in the uptrend that has since flipped is still tracked until its SELL (STOP, TAKE PROFIT or TIME EXIT).</p>
+    <div class="tablewrap"><table class="grid pvgrid" id="pvDownTable"></table></div>
+  </div>
 </section>
 
 <!-- ============================== ALERTS ============================== -->
@@ -122,6 +154,11 @@
     </form>
     <div id="alertMsg" class="msg"></div>
     <div class="tablewrap"><table class="grid" id="alertTable"></table></div>
+  </div>
+  <div class="card">
+    <div class="card-head"><h2>PV Confirm alerts</h2></div>
+    <p class="sub">Sent once each trading day at 4:15 PM ET, when the daily bar is complete: every BUY, SELL and READY TO BUY.</p>
+    <div class="tablewrap"><table class="grid" id="pvAlertTable"></table></div>
   </div>
 </section>
 
