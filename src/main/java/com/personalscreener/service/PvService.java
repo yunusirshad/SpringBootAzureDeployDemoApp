@@ -165,7 +165,8 @@ public class PvService {
 
         // names: screened or added, plus open trades
         Map<String, StockRow> onScreen = new LinkedHashMap<>();
-        for (StockRow r : screen.snapshot().rows) if (r.screenPass || r.userAdded) onScreen.put(r.symbol, r);
+        // only Zoya-compliant names; a trade already open is still tracked to its exit
+        for (StockRow r : screen.snapshot().rows) if ((r.screenPass || r.userAdded) && "COMPLIANT".equals(r.zoya)) onScreen.put(r.symbol, r);
         LinkedHashSet<String> symbols = new LinkedHashSet<>(onScreen.keySet());
         symbols.addAll(open.keySet());
 

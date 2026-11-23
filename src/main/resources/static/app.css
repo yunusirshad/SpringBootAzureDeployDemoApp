@@ -222,3 +222,4 @@ canvas.seschart { width: 100%; height: 540px; display: block; margin: 6px 0 12px
 .pvform label.check { flex-direction: row; align-items: center; gap: 6px; color: var(--text); }
 .pvform input[type=number] { font: inherit; padding: 5px 6px; border: 1px solid var(--border); border-radius: 4px; background: var(--surface); color: var(--text); }
 .pvformbtns { grid-column: 1 / -1; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.tag.flat { background: var(--surface-2); color: var(--muted); }

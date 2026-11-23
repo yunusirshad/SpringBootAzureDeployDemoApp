@@ -75,7 +75,7 @@ public class StockAnalyzer {
         row.plusDi = Num.round(a.plusDi(), 1);
         row.minusDi = Num.round(a.minusDi(), 1);
         row.adxRising = a.rising();
-        row.side = a.rising() ? "Long" : "Short";
+        row.side = a.rising() ? "Long" : "Flat";   // long only: no short side
         row.stoch = Num.round(Indicators.stochastic(done, 14, 3), 1);
         row.bandPct = Num.round(Indicators.bollingerPosition(cl, 20, 2), 1);
         row.atr = Num.round(Indicators.atr(done, 14), 4);

@@ -36,7 +36,7 @@ public class BacktestService {
 
     public record Params(int days, String interval, double threshold, boolean shorts, double stopAtr, double trailAtr,
                          int maxBars, double costBps) {
-        public static Params defaults() { return new Params(60, "60m", 60, true, 2.0, 2.5, 35, 5); }
+        public static Params defaults() { return new Params(60, "60m", 60, false, 2.0, 2.5, 35, 5); }
     }
 
     public record Trade(String symbol, String side, String entryTime, double entry, String exitTime, double exit,

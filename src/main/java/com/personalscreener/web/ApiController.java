@@ -154,20 +154,19 @@ public class ApiController {
         return technicals.technicals(clean(ticker));
     }
 
-    /** Quantum Shift backtest. Defaults: every name in the app, last 60 days, 1-hour bars, energy 60, longs and shorts. */
+    /** Quantum Shift backtest, long only. Defaults: every name in the app, last 60 days, 1-hour bars, energy 60. */
     @GetMapping("/backtest")
     public Map<String, Object> backtest(@RequestParam(required = false) String tickers,
                                         @RequestParam(defaultValue = "60") int days,
                                         @RequestParam(defaultValue = "60m") String interval,
                                         @RequestParam(defaultValue = "60") double threshold,
-                                        @RequestParam(defaultValue = "true") boolean shorts,
                                         @RequestParam(defaultValue = "2.0") double stopAtr,
                                         @RequestParam(defaultValue = "2.5") double trailAtr,
                                         @RequestParam(defaultValue = "35") int maxBars,
                                         @RequestParam(defaultValue = "5") double costBps) throws Exception {
         if (!List.of("15m", "60m", "1d").contains(interval)) throw new IllegalArgumentException("interval must be 15m, 60m or 1d");
         if (days < 5 || days > 365) throw new IllegalArgumentException("days must be 5 to 365");
-        var p = new BacktestService.Params(days, interval, threshold, shorts, stopAtr, trailAtr, maxBars, costBps);
+        var p = new BacktestService.Params(days, interval, threshold, false, stopAtr, trailAtr, maxBars, costBps);
         lastBacktest = backtest.run(WatchlistService.parse(tickers), p);
         return lastBacktest;
     }

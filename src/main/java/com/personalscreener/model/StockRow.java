@@ -10,6 +10,8 @@ public class StockRow {
     public boolean userAdded;
     /** CORE, NO_UPTREND, SCREEN_ONLY */
     public String list;
+    /** For a name you added that is not in Core: why (not compliant, no uptrend). */
+    public String offReason;
     public int rank;
     /** 0-100, how good a long it is; the Core list is sorted by it. */
     public int longScore;
@@ -57,7 +59,7 @@ public class StockRow {
     public Double ema20d;
     public Double rsi, macd, macdSignal, adx, plusDi, minusDi, stoch, bandPct;
     public boolean macdUp, adxRising;
-    /** Long when the positive direction leads (ADX rising), Short otherwise. */
+    /** Long when the positive direction leads (+DI over -DI), Flat otherwise. Long only: there is no short side. */
     public String side;
 
     // intraday

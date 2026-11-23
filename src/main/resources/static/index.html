@@ -30,7 +30,6 @@
   <div id="filterChips" class="chips"></div>
   <div class="statusline">
     <span id="statusLine">Loading…</span>
-    <label class="toggle"><input type="checkbox" id="showAll"> Show all</label>
     <button id="refreshBtn" class="ghost small">Refresh now</button>
   </div>
   <div id="screenNote" class="note hidden"></div>
@@ -79,7 +78,6 @@
       <div class="gexfilters">
         <select id="gexState" aria-label="State"><option value="" selected>Any state</option><option value="Bull">Bull</option><option value="Bear">Bear</option></select>
         <select id="gexBias" aria-label="Bias"><option value="" selected>Any bias</option><option>Bullish</option><option>Bearish</option><option>Mixed</option></select>
-        <select id="gexSide" aria-label="Side"><option value="" selected>Any side</option><option>Long</option><option>Short</option></select>
       </div>
     </div>
     <p class="sub">Every listed stock, from its option chain, read once a day. Open interest is summed by strike over the expiries in the next 45 days. Call wall and put wall are the strikes with the most call and put open interest; King is the strike with the largest net gamma. Each level shows its open interest and its share of the total. Expiry is the date holding the most open interest. It is not a forecast.</p>
@@ -89,7 +87,7 @@
 
   <div class="card">
     <div class="card-head"><h2>Core stocks <span class="count" id="coreCount">0</span></h2><div id="signalSummary" class="sigsum"></div></div>
-    <p class="sub">Every name that passes the screen and has a trend to trade (Strong Uptrend, Early Bullish Reversal or Early Bearish Reversal), with no limit on how many. Each name gets a signal: <b>Buy now</b>, <b>Ready to buy</b>, <b>Sell now</b>, <b>Ready to sell</b>, <b>Hold</b> or <b>Wait</b>, listed in that order (APP Details has the rules). The list shows the buy and sell signals unless you pick another in the toolbar. Within a signal, names are sorted by the setup score, low risk and high reward: room left on the range meter (25), reward to risk from support to target (25), the latest session phase (20) and the long score (30). The <b>super stock</b> is the best name that is compliant, clear of earnings, under 100% of its ATR range and in a Strong Uptrend or Early Bullish Reversal; it stays at the top whatever the sort. Names you added that have no uptrend sit underneath.</p>
+    <p class="sub">Long only. Every name that passes the screen, is Zoya compliant, and is in a Strong Uptrend or Early Bullish Reversal, with no limit on how many. Names that are not compliant are never listed. Each name gets a signal: <b>Buy now</b>, <b>Ready to buy</b>, <b>Sell now</b>, <b>Ready to sell</b>, <b>Hold</b> or <b>Wait</b>, listed in that order (APP Details has the rules). The list shows the buy and sell signals unless you pick another in the toolbar. Within a signal, names are sorted by the setup score, low risk and high reward: room left on the range meter (25), reward to risk from support to target (25), the latest session phase (20) and the long score (30). The <b>super stock</b> is the best name that is compliant, clear of earnings, under 100% of its ATR range and in a Strong Uptrend or Early Bullish Reversal; it stays at the top whatever the sort. Names you added that have no uptrend sit underneath.</p>
     <form id="addForm" class="addrow">
       <input id="addInput" placeholder="Ticker" aria-label="Ticker" autocomplete="off">
       <button type="submit">Add</button>
@@ -194,7 +192,6 @@
       <label class="hint">Energy ≥ <input name="threshold" type="number" value="60" min="0" max="100" style="width:64px"></label>
       <label class="hint">Max bars <input name="maxBars" type="number" value="35" min="1" style="width:64px"></label>
       <label class="hint">Cost bps <input name="costBps" type="number" value="5" min="0" step="0.5" style="width:64px"></label>
-      <label class="toggle"><input type="checkbox" name="shorts" checked> Shorts</label>
       <button type="submit">Run backtest</button>
     </form>
     <div id="btOut"></div>

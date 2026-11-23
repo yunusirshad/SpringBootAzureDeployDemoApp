@@ -267,9 +267,10 @@ public class ScreenService {
             r.gex = gexCache.get(r.symbol);
             r.userAdded = watchlist.contains(r.symbol);
         }
-        // Core: screened or added names in an uptrend or a trend reversal. Buy now, Ready to buy, Sell now, Ready to
-        // sell, Hold, Wait; each group by the setup score (range meter, reward:risk, session phase, long score).
-        // The best Buy now (else Ready to buy) name is the super stock, on top.
+        // Core: screened or added names that are Zoya compliant and in a Strong Uptrend or Early Bullish Reversal.
+        // Long only. Buy now, Ready to buy, Sell now (exit the long), Ready to sell, Hold, Wait; each group by the
+        // setup score (range meter, reward:risk, session phase, long score). The best Buy now (else Ready to buy)
+        // name is the super stock, on top.
         for (StockRow r : s.rows) {
             LongScore.Result ls = LongScore.of(r);
             r.longScore = ls.score();
@@ -291,7 +292,7 @@ public class ScreenService {
             r.rank = 0;
         }
         List<StockRow> core = s.rows.stream()
-                .filter(r -> (r.screenPass || r.userAdded) && SetupScore.listed(r))
+                .filter(r -> (r.screenPass || r.userAdded) && inCore(r))
                 .sorted(Comparator.comparingInt((StockRow r) -> signalOrder(r.signal))
                         .thenComparingInt(r -> -r.setupScore)
                         .thenComparingInt(r -> -r.longScore)
@@ -307,8 +308,26 @@ public class ScreenService {
             core.get(i).list = "CORE";
             core.get(i).rank = i + 1;
         }
+        for (StockRow r : s.rows) {
+            r.offReason = null;
+            if (!r.userAdded || "CORE".equals(r.list)) continue;
+            if (!"COMPLIANT".equals(r.zoya)) r.offReason = switch (r.zoya == null ? "" : r.zoya) {
+                case "NON_COMPLIANT" -> "Not Shariah-compliant on Zoya, so it is not listed";
+                case "QUESTIONABLE" -> "Questionable on Zoya, so it is not listed";
+                case "NOT_COVERED" -> "Zoya does not cover it, so it is not listed";
+                default -> "Zoya compliance not confirmed yet, so it is not listed";
+            };
+            else r.offReason = TrendClassifier.BEAR_REV.equals(r.trendClass)
+                    ? "Early Bearish Reversal: not a Strong Uptrend or Early Bullish Reversal, so it stays off Core"
+                    : "No uptrend, so it stays off Core";
+        }
         s.compliant = (int) s.rows.stream().filter(r -> r.screenPass && "COMPLIANT".equals(r.zoya)).count();
         s.chainsAvailable = !gexCache.isEmpty();
+    }
+
+    /** Core holds compliant names in a Strong Uptrend or Early Bullish Reversal only. */
+    static boolean inCore(StockRow r) {
+        return "COMPLIANT".equals(r.zoya) && SetupScore.longTrend(r);
     }
 
     static int signalOrder(String signal) {

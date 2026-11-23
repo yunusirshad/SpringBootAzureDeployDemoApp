@@ -64,7 +64,7 @@
   });
 
   // ---------- controls (remembered per viewer) ----------
-  const controls = ['showAll', 'search', 'signalFilter', 'stateFilter', 'sortBy', 'gexState', 'gexBias', 'gexSide'];
+  const controls = ['search', 'signalFilter', 'stateFilter', 'sortBy', 'gexState', 'gexBias'];
   const saved = store.get('controls', {});
   controls.forEach((id) => {
     const el = $('#' + id);
@@ -88,7 +88,6 @@
   }
 
   function visible(rows) {
-    const showAll = $('#showAll').checked;
     const q = $('#search').value.trim().toUpperCase();
     const st = $('#stateFilter').value;
     const sf = $('#signalFilter').value;
@@ -97,7 +96,7 @@
       : sf === 'sell' ? sig === 'SELL_NOW' || sig === 'READY_SELL' : sig === sf);
     return rows.filter((r) => {
       if (r.list === 'CORE' && !sigOk(r.signal || 'WAIT')) return false;
-      if (!showAll && (r.zoya === 'NON_COMPLIANT' || r.zoya === 'QUESTIONABLE')) return false;
+      if (r.zoya !== 'COMPLIANT') return false;     // non-compliant names are never displayed
       if (q && !r.symbol.includes(q) && !(r.name || '').toUpperCase().includes(q)) return false;
       if (st && r.state !== st) return false;
       return true;
@@ -149,9 +148,9 @@
     }).join('');
 
     // GEX levels: every listed name, narrowed by state / bias / side
-    const gs = $('#gexState').value, gb = $('#gexBias').value, gd = $('#gexSide').value;
+    const gs = $('#gexState').value, gb = $('#gexBias').value;
     const gex = sorted(vis.filter((r) => r.list === 'CORE')
-      .filter((r) => (!gs || (r.state || '').startsWith(gs)) && (!gb || r.bias === gb) && (!gd || r.side === gd)));
+      .filter((r) => (!gs || (r.state || '').startsWith(gs)) && (!gb || r.bias === gb)));
     $('#gexTable').innerHTML = table(gex, false, 'No names match this state, bias, or side.');
 
     $('#coreTable').innerHTML = table(core, true, $('#signalFilter').value
@@ -161,7 +160,7 @@
     const noUp = rows.filter((r) => r.userAdded && r.list === 'NO_UPTREND');
     const wlMissing = (data.watchlist || []).filter((t) => !rows.some((r) => r.symbol === t));
     $('#noUptrend').innerHTML = noUp.map((r) => `<div class="item"><a href="#" class="tkr" data-ses="${esc(r.symbol)}">${esc(r.symbol)}</a>
-        <span class="why">${r.error ? esc(r.error) : 'No uptrend, so it stays off both lists'}</span>
+        <span class="why">${r.error ? esc(r.error) : esc(r.offReason || 'Not a Strong Uptrend or Early Bullish Reversal, so it stays off Core')}</span>
         <button class="ghost small" data-remove="${esc(r.symbol)}">Remove</button></div>`).join('')
       + wlMissing.map((t) => `<div class="item"><span class="tkr">${esc(t)}</span><span class="why">Waiting for the next screen</span>
         <button class="ghost small" data-remove="${esc(t)}">Remove</button></div>`).join('');
@@ -242,7 +241,7 @@
       <td>${esc(r.exchange || '')}</td>
       <td><div><a href="#" class="tkr" data-ses="${esc(r.symbol)}" title="Open the session analysis for ${esc(r.symbol)}">${esc(r.symbol)}</a>${r.userAdded ? '<span class="added">You added</span>' : ''}</div>
         <div class="cname">${esc(r.name || '')}</div>
-        <div><span class="tag ${r.side === 'Long' ? 'long' : 'short'}">${esc(r.side || '—')}</span>${q}</div>
+        <div>${r.side === 'Long' ? '<span class="tag long" title="+DI above −DI">Long</span>' : '<span class="tag flat" title="−DI above +DI: no long edge yet">Flat</span>'}${q}</div>
         <div><span class="tcbadge">${esc(TREND[r.trendClass] || 'No Uptrend')}</span></div>
         ${r.list === 'CORE' ? `<div class="sigline"><span class="sig ${esc(r.signal || 'WAIT')}">${esc(SIGNAL[r.signal] || 'Wait')}</span>${(r.signalNotes || []).length ? `<span class="signotes">${esc(r.signalNotes.join(' · '))}</span>` : ''}</div>` : ''}
         ${r.superStock ? '<div class="superbadge">★ Super stock · lowest risk, highest reward</div>' : ''}
@@ -642,7 +641,6 @@
     const f = new FormData(e.target);
     const q = new URLSearchParams();
     for (const k of ['tickers', 'days', 'interval', 'threshold', 'maxBars', 'costBps']) if (f.get(k)) q.set(k, f.get(k));
-    q.set('shorts', f.get('shorts') ? 'true' : 'false');
     $('#btOut').innerHTML = '<p class="muted">Running on every name… this takes a few seconds per dozen tickers.</p>';
     try { renderBacktest(await api('api/backtest?' + q)); } catch (err) { $('#btOut').innerHTML = `<p class="msg err">${esc(err.message)}</p>`; }
   });
@@ -663,13 +661,13 @@
         ${tile('Buy and hold', pc(S.buyHoldReturnPct), 'same window')}
         ${tile('Avg hold', fix(S.avgBarsHeld, 1) + ' bars', `best ${signed(S.bestPct, 1)} · worst ${signed(S.worstPct, 1)}`)}
       </div>
-      <p class="extra">${side(d.longs, 'Longs')}<br>${side(d.shorts, 'Shorts')}</p>
+      <p class="extra">${side(d.longs, 'Longs')} · long only</p>
       <h3>By stock</h3>
-      <div class="tablewrap"><table class="grid"><thead><tr><th>Stock</th><th class="num">Trades</th><th class="num">Win rate</th><th class="num">Avg trade</th><th class="num">Avg R</th><th class="num">Strategy</th><th class="num">Longs</th><th class="num">Shorts</th><th class="num">Max DD</th><th class="num">Buy &amp; hold</th><th class="num">Energy now</th><th>Regime</th><th>Last shift</th></tr></thead><tbody>
+      <div class="tablewrap"><table class="grid"><thead><tr><th>Stock</th><th class="num">Trades</th><th class="num">Win rate</th><th class="num">Avg trade</th><th class="num">Avg R</th><th class="num">Strategy</th><th class="num">Longs</th><th class="num">Max DD</th><th class="num">Buy &amp; hold</th><th class="num">Energy now</th><th>Regime</th><th>Last shift</th></tr></thead><tbody>
       ${d.stocks.map((r) => r.error ? `<tr><td class="tkr">${esc(r.symbol)}</td><td colspan="12" class="muted">${esc(r.error)}</td></tr>` : `<tr>
         <td class="tkr">${esc(r.symbol)}</td><td class="num">${r.trades}</td><td class="num">${isNum(r.winRate) ? r.winRate + '%' : '—'}</td>
         <td class="num">${pc(r.avgReturnPct)}</td><td class="num">${fix(r.avgR)}</td><td class="num"><b>${pc(r.totalReturnPct)}</b></td>
-        <td class="num">${pc(r.longReturnPct)}</td><td class="num">${pc(r.shortReturnPct)}</td>
+        <td class="num">${pc(r.longReturnPct)}</td>
         <td class="num">${isNum(r.maxDrawdownPct) ? '-' + r.maxDrawdownPct.toFixed(1) + '%' : '—'}</td><td class="num">${pc(r.buyHoldPct)}</td>
         <td class="num">${fix(r.lastEnergy, 0)}</td><td>${r.regime > 0 ? '<span class="tag bull">Up</span>' : r.regime < 0 ? '<span class="tag bear">Down</span>' : '<span class="muted">Neutral</span>'}</td>
         <td class="meta">${esc(r.lastSignal || '—')}</td></tr>`).join('')}
@@ -857,11 +855,11 @@
       <h3>1. The screen</h3>
       <p>Every 15 minutes on trading days from 7:00 AM to 4:00 PM ET (7:00, 7:15, … 4:00), the app asks TradingView's screener for Nasdaq and NYSE common stocks that pass price, market cap, debt/equity and revenue growth. It then checks target upside, debt/assets, debt/capital and cash/debt itself from the same columns. Names you add are screened every run whether or not they pass.</p>
       <h3>2. Compliance</h3>
-      <p>Each name is looked up on its Zoya page (for example zoya.finance/stocks/mitk, which reads "MITK stock is Shariah-compliant") and the result is cached for 24 hours, so Zoya is asked about each ticker at most once a day. The cache is saved to disk and survives restarts. A ticker Zoya doesn't cover reads "Not covered"; a failed lookup reads "Not checked" and is retried after 15 minutes. "Show all" also shows names Zoya marks not compliant or questionable.</p>
+      <p>Each name is looked up on its Zoya page (for example zoya.finance/stocks/mitk, which reads "MITK stock is Shariah-compliant") and the result is cached for 24 hours, so Zoya is asked about each ticker at most once a day. The cache is saved to disk and survives restarts. A ticker Zoya doesn't cover reads "Not covered"; a failed lookup reads "Not checked" and is retried after 15 minutes. Only compliant names are ever displayed: a name Zoya marks not compliant, questionable or not covered never appears in Core, GEX levels or PV Confirm. A name you added yourself shows under Core with the reason.</p>
       <h3>3. Quality</h3><p>${esc(qualityText)} Each clip is worth 20 points, with the score fading the further outside the clip a value sits (zero at ten times away). A missing quote scores the spread clip at half.</p>
       <h3>4. The lists</h3>
       <ul>
-        <li><b>Core</b>: every name that passes the screen and is not No Uptrend, with no limit on how many, sorted by the <b>setup score</b> (0–100, low risk and high reward), re-ranked on every price tick:
+        <li><b>Core</b>: long only. Every name that passes the screen, is Zoya compliant, and is in a Strong Uptrend or Early Bullish Reversal, with no limit on how many, sorted by the <b>setup score</b> (0–100, low risk and high reward), re-ranked on every price tick:
           <b>range meter</b> 25 (0% of the ATR used scores 25, 100% or more scores 0);
           <b>reward to risk</b> 25 (risk from the price to support, the higher of today's low and the put wall, at least ¼ ATR; reward up to today's low + 1 ATR, capped at the call wall; 3:1 or better scores 25);
           <b>session phase</b> 20 (the latest pre-market or New York session from the Sessions indicator: Bull Distribution 20, Bull Absorption 16, Bear Absorption 12, Bull Manipulation 10, Bull Accumulation 8, times its percent);
@@ -877,7 +875,7 @@
       </ul>
       <h3>5. Readings on each row</h3>
       <ul>
-        <li><b>Long / Short</b>: Long when the daily +DI is above −DI (ADX "rising"), Short otherwise.</li>
+        <li><b>Long / Flat</b>: Long when the daily +DI is above −DI, Flat otherwise. The app is long only: there is no short side anywhere, and the Quantum Shift backtest takes longs only.</li>
         <li><b>Range meter</b>: today's high-low range against the 14-day ATR, how much of it is used and what is left. RVol is today's volume against the 10-day and 30-day average.</li>
         <li><b>Current state</b>: initiation is a move of 0.6 ATR or more on 1.3× volume; accumulation (up) or distribution (down) is a move of 0.45 ATR or more, or volume of 1× with a close in the third of the range that agrees; anything smaller is manipulation.</li>
         <li><b>To breakout</b>: the distance to the higher of today's premarket high and the prior day's high.</li>
@@ -901,7 +899,7 @@
         <li><code>GET /api/watchlist</code>, <code>POST /api/watchlist {"tickers":"SRTA, AUR"}</code>, <code>DELETE /api/watchlist/{ticker}</code>, <code>GET /api/watchlist/export</code>.</li>
         <li><code>GET /api/alerts</code>, <code>POST /api/alerts {"symbol","type":"ABOVE|BELOW|PCT_UP|PCT_DOWN","level","note"}</code>, <code>DELETE /api/alerts/{id}</code>.</li>
         <li><code>GET /api/analyze/{ticker}</code>: quarterly results from SEC EDGAR.</li>
-        <li><code>GET /api/backtest?tickers=&amp;days=60&amp;interval=60m&amp;threshold=60&amp;shorts=true&amp;stopAtr=2&amp;trailAtr=2.5&amp;maxBars=35&amp;costBps=5</code>: Quantum Shift backtest; blank tickers means every name in the app.</li>
+        <li><code>GET /api/backtest?tickers=&amp;days=60&amp;interval=60m&amp;threshold=60&amp;stopAtr=2&amp;trailAtr=2.5&amp;maxBars=35&amp;costBps=5</code>: Quantum Shift backtest; blank tickers means every name in the app.</li>
         <li><code>GET /api/sessions/{symbol}?tf=5m|15m|1h|4h|1d&amp;days=3</code>: Asia, London and New York session phases (scored on 5-minute candles) plus candles for the chosen timeframe.</li>
         <li><code>GET /api/technicals/{ticker}</code>: indicators on four timeframes and 180 daily closes.</li>
         <li><code>GET /api/config</code>, <code>GET /actuator/health</code>.</li>
