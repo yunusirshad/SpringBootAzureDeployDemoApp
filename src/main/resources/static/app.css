@@ -226,3 +226,33 @@ canvas.seschart { width: 100%; height: 540px; display: block; margin: 6px 0 12px
 .expected { font-size: 12px; margin: 3px 0; color: var(--muted); }
 .expected b { color: var(--text); }
 .expect { font-style: italic; color: var(--muted); }
+
+/* option chain under a row */
+.grid tr.chainrow > td { background: var(--surface); padding: 0 8px 12px; }
+.chainpanel { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; background: var(--surface); }
+.chainhead { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: baseline; margin-bottom: 6px; }
+.chainsum { font-size: 12px; margin: 4px 0 8px; color: var(--muted); }
+.chainsum b { color: var(--text); }
+.chainhdr, .crow { display: grid; grid-template-columns: 1fr 180px 1fr minmax(140px, 0.6fr); gap: 8px; align-items: center; }
+.chainhdr { font-size: 11px; color: var(--muted); font-weight: 600; text-transform: uppercase; padding: 0 0 4px; border-bottom: 1px solid var(--border); }
+.chainhdr span:nth-child(1) { text-align: right; } .chainhdr span:nth-child(2) { text-align: center; }
+.crow { padding: 2px 0; font-size: 12px; }
+.crow.key { background: var(--surface-2); border-radius: 4px; }
+.cput, .ccall { display: flex; align-items: center; gap: 6px; height: 16px; }
+.cput { justify-content: flex-end; }
+.cput i, .ccall i { display: block; height: 12px; border-radius: 2px; min-width: 1px; }
+.cput i { background: var(--bear); opacity: .75; }
+.ccall i { background: var(--bull); opacity: .75; }
+.cnum { font-size: 11px; color: var(--muted); min-width: 34px; }
+.cput .cnum { text-align: right; }
+.cstrike { display: flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: 2px 4px; font-weight: 700; white-space: nowrap; }
+.cmeta { font-size: 11px; color: var(--faint); white-space: nowrap; }
+.ctag { display: inline-block; font-size: 9px; font-weight: 800; text-transform: uppercase; border-radius: 3px; padding: 0 4px; }
+.ctag.call { background: var(--bull-bg); color: var(--bull); } .ctag.put { background: var(--bear-bg); color: var(--bear); }
+.ctag.king { background: var(--warn-bg); color: var(--warn); }
+.cspot { border-top: 2px dashed var(--accent); margin: 3px 0; position: relative; height: 0; }
+.cspot span { position: absolute; right: 0; top: -9px; background: var(--surface); color: var(--accent); font-size: 11px; font-weight: 700; padding: 0 4px; }
+@media (max-width: 700px) {
+  .chainhdr, .crow { grid-template-columns: 1fr 96px 1fr; }
+  .cmeta, .chainhdr span:nth-child(4) { display: none; }
+}

@@ -73,6 +73,35 @@ public final class GexCalculator {
                 today, chains.size(), last);
     }
 
+    /** One strike of the chain view, summed over the given expiries. */
+    public record StrikeRow(double strike, double callOi, double putOi, double callIv, double putIv, double netGex) {}
+
+    /** Open interest, open-interest-weighted IV and net gamma by strike, summed over the given expiries. */
+    public static List<StrikeRow> byStrike(List<OptionChain> chains, double spot, LocalDate today) {
+        Map<Double, double[]> m = new TreeMap<>();   // callOi, putOi, callIv*oi, putIv*oi, gex, callIvN, putIvN
+        for (OptionChain ch : chains) {
+            double t = Math.max(1, ChronoUnit.DAYS.between(today, ch.expiry())) / 365.0;
+            for (OptionChain.Strike c : ch.calls()) {
+                double[] a = m.computeIfAbsent(c.strike(), k -> new double[7]);
+                a[0] += c.openInterest();
+                if (!Double.isNaN(c.impliedVolatility())) { a[2] += c.impliedVolatility() * Math.max(1, c.openInterest()); a[5] += Math.max(1, c.openInterest()); }
+                a[4] += gex(c, spot, t);
+            }
+            for (OptionChain.Strike p : ch.puts()) {
+                double[] a = m.computeIfAbsent(p.strike(), k -> new double[7]);
+                a[1] += p.openInterest();
+                if (!Double.isNaN(p.impliedVolatility())) { a[3] += p.impliedVolatility() * Math.max(1, p.openInterest()); a[6] += Math.max(1, p.openInterest()); }
+                a[4] -= gex(p, spot, t);
+            }
+        }
+        List<StrikeRow> out = new java.util.ArrayList<>();
+        for (var e : m.entrySet()) {
+            double[] a = e.getValue();
+            out.add(new StrikeRow(e.getKey(), a[0], a[1], a[5] > 0 ? a[2] / a[5] : Double.NaN, a[6] > 0 ? a[3] / a[6] : Double.NaN, a[4]));
+        }
+        return out;
+    }
+
     /** {strike, open interest} of the strike with the most open interest; NaN when none has any. */
     static double[] wall(Map<Double, Double> oiByStrike, double spot) {
         double strike = Double.NaN, oi = 0;

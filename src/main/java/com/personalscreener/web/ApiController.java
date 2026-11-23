@@ -203,6 +203,12 @@ public class ApiController {
     @GetMapping("/chains/status")
     public Map<String, Object> chainStatus() { return screen.chainStatus(); }
 
+    /** One stock's option chain for the Screen page. {@code expiry} is ALL (the 45-day window) or a date. */
+    @GetMapping("/chain/{ticker}")
+    public Map<String, Object> chain(@PathVariable String ticker, @RequestParam(defaultValue = "ALL") String expiry) {
+        return screen.chainView(symbol(ticker), expiry);
+    }
+
     /** Reads every name's option chain again now. */
     @PostMapping("/chains/refresh")
     public Map<String, Object> chainRefresh() {

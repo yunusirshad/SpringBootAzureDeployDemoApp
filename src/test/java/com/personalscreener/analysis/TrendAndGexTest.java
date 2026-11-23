@@ -112,4 +112,17 @@ class TrendAndGexTest {
         weak.earningsSoon = true;
         assertTrue(LongScore.of(weak).score() < 10);
     }
+
+    @Test
+    void chainViewSumsOpenInterestByStrikeAcrossExpiries() {
+        LocalDate today = LocalDate.of(2026, 11, 23);
+        OptionChain a = new OptionChain("X", LocalDate.of(2026, 11, 27), 10, List.of(k(11, 500)), List.of(k(9, 300)));
+        OptionChain b = new OptionChain("X", LocalDate.of(2026, 12, 18), 10, List.of(k(11, 200), k(13, 50)), List.of(k(9, 100)));
+        var rows = GexCalculator.byStrike(List.of(a, b), 10, today);
+        assertEquals(List.of(9.0, 11.0, 13.0), rows.stream().map(GexCalculator.StrikeRow::strike).toList());
+        assertEquals(400, rows.get(0).putOi(), 1e-9);
+        assertEquals(700, rows.get(1).callOi(), 1e-9);
+        assertTrue(rows.get(0).netGex() < 0, "puts count negative");
+        assertTrue(rows.get(1).netGex() > 0, "calls count positive");
+    }
 }

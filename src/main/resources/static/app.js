@@ -12,6 +12,8 @@
 
   let data = null;            // last /api/screen payload
   const openData = new Set(); // rows with the Data block expanded
+  const openChain = new Map(); // symbol -> selected expiry ('ALL' or a date) for rows with the option chain open
+  const chainData = new Map(); // `${symbol}|${expiry}` -> chain view, or { loading: true }
   const seenAlerts = new Set(store.get('seenAlerts', []));
 
   // ---------- formatting ----------
@@ -263,6 +265,7 @@
         <div class="meta">${meta}</div>
         <div class="meta">${earn}</div>
         <button class="ghost small datatoggle" data-toggle="${esc(r.symbol)}">${open ? 'Hide data' : 'Data'}</button>
+        ${withActions ? `<button class="ghost small datatoggle" data-chain="${esc(r.symbol)}" aria-expanded="${openChain.has(r.symbol)}">${openChain.has(r.symbol) ? 'Hide chain' : 'Chain'}</button>` : ''}
         ${dataBlock}</td>
       <td><a class="zoya ${esc(r.zoya)}" href="https://zoya.finance/stocks/${encodeURIComponent(String(r.symbol).toLowerCase())}" target="_blank" rel="noopener" title="Open on Zoya">${esc(zoyaLabel[r.zoya] || r.zoya)}</a><div class="meta">${r.zoyaCheckedAt ? 'Last scanned ' + esc(etStamp(r.zoyaCheckedAt)) : ''}</div></td>
       <td class="num"><b data-f="price">${money(r.price)}</b></td>
@@ -278,12 +281,74 @@
         <div class="book">${book}</div></td>
       ${withActions ? `<td>${r.userAdded ? `<button class="ghost small" data-remove="${esc(r.symbol)}">Remove</button>` : ''}
         <div><a href="#" class="link small" data-tech="${esc(r.symbol)}">Chart</a></div></td>` : ''}
-    </tr>`;
+    </tr>${withActions && openChain.has(r.symbol) ? `<tr class="chainrow"><td colspan="${HEAD.length + 1}">${chainHtml(r.symbol)}</td></tr>` : ''}`;
   }
+
+  // ---------- option chain (inline under a row) ----------
+  async function loadChain(sym, exp) {
+    const key = `${sym}|${exp}`;
+    if (chainData.has(key) && !chainData.get(key).loading) return;
+    chainData.set(key, { loading: true });
+    try { chainData.set(key, await api(`api/chain/${encodeURIComponent(sym)}?expiry=${encodeURIComponent(exp)}`)); }
+    catch (err) { chainData.set(key, { error: err.message }); }
+    render();
+  }
+
+  function chainHtml(sym) {
+    const exp = openChain.get(sym) || 'ALL';
+    const d = chainData.get(`${sym}|${exp}`);
+    if (!d || d.loading) return '<div class="chainpanel"><p class="muted">Reading the option chain…</p></div>';
+    if (d.error) return `<div class="chainpanel"><p class="msg err">${esc(d.error)}</p><p class="meta">GET /api/chains/status has the details.</p></div>`;
+    const g = d.levels || {};
+    const spot = d.spot;
+    const strikes = d.strikes || [];
+    // keep the 30 strikes nearest the price
+    const near = strikes.slice().sort((a, b) => Math.abs(a.strike - spot) - Math.abs(b.strike - spot)).slice(0, 30).sort((a, b) => b.strike - a.strike);
+    const max = Math.max(1, ...near.map((k) => Math.max(k.callOi, k.putOi)));
+    const tags = (k) => [k.strike === g.callWall ? '<span class="ctag call">Call wall</span>' : '', k.strike === g.putWall ? '<span class="ctag put">Put wall</span>' : '',
+      k.strike === g.king ? '<span class="ctag king">King</span>' : ''].join('');
+    let spotDone = false;
+    const rows = near.map((k) => {
+      let line = '';
+      if (!spotDone && k.strike < spot) { spotDone = true; line = `<div class="cspot" role="presentation"><span>Price ${money(spot)}</span></div>`; }
+      return line + `<div class="crow${k.strike === g.callWall || k.strike === g.putWall || k.strike === g.king ? ' key' : ''}">
+        <div class="cput"><span class="cnum">${k.putOi ? big(k.putOi) : ''}</span><i style="width:${(k.putOi / max * 100).toFixed(1)}%"></i></div>
+        <div class="cstrike">${money(k.strike)}${tags(k)}</div>
+        <div class="ccall"><i style="width:${(k.callOi / max * 100).toFixed(1)}%"></i><span class="cnum">${k.callOi ? big(k.callOi) : ''}</span></div>
+        <div class="cmeta">IV ${isNum(k.callIv) ? (k.callIv * 100).toFixed(0) + '%' : '—'} / ${isNum(k.putIv) ? (k.putIv * 100).toFixed(0) + '%' : '—'} · γ ${signedBig(k.netGex)}</div>
+      </div>`;
+    }).join('') + (spotDone ? '' : `<div class="cspot"><span>Price ${money(spot)}</span></div>`);
+    const chips = [['ALL', 'All ≤45 days']].concat((d.expiries || []).map((e) => [e.date, `${e.date} · ${big(e.oi)}`]))
+      .map(([v, label]) => `<button type="button" class="chip pvchip${d.selected === v ? ' on' : ''}" data-chain-exp="${esc(sym)}|${esc(v)}">${esc(label)}</button>`).join('');
+    return `<div class="chainpanel">
+      <div class="chainhead"><b>${esc(sym)} option chain</b><span class="meta">${esc(d.source || '')} · read ${esc(etStamp(d.readAt))} · open interest by strike, puts left, calls right</span></div>
+      <div class="chips pvchips">${chips}</div>
+      <div class="chainsum">Call wall <b>${money(g.callWall)}</b> (${big(g.callWallOi)} OI) · King <b>${money(g.king)}</b> · Put wall <b>${money(g.putWall)}</b> (${big(g.putWallOi)} OI) · calls ${big(g.callOi)} / puts ${big(g.putOi)} · C/P ${fix(g.callPutRatio)}</div>
+      <div class="chainhdr"><span>Put OI</span><span>Strike</span><span>Call OI</span><span></span></div>
+      <div class="chaingrid">${rows || '<p class="muted">No open interest near the price.</p>'}</div>
+    </div>`;
+  }
+
+  const signedBig = (v) => !isNum(v) ? '—' : (v < 0 ? '−' : '+') + big(Math.abs(v));
 
 
   // row actions
   document.addEventListener('click', async (e) => {
+    const ch = e.target.closest('[data-chain]');
+    if (ch) {
+      const s = ch.dataset.chain;
+      if (openChain.has(s)) openChain.delete(s); else { openChain.set(s, 'ALL'); loadChain(s, 'ALL'); }
+      render();
+      return;
+    }
+    const ce = e.target.closest('[data-chain-exp]');
+    if (ce) {
+      const [s, exp] = ce.dataset.chainExp.split('|');
+      openChain.set(s, exp);
+      loadChain(s, exp);
+      render();
+      return;
+    }
     const t = e.target.closest('[data-toggle]');
     if (t) {
       const s = t.dataset.toggle;
@@ -902,6 +967,7 @@
           The state is rebuilt by replaying the last 40 daily bars. Today's bar counts as complete from 4:15 PM ET; before that the live bar's open is only used to fill a BUY from the day before. It runs a few minutes after each screen and at 4:15 PM ET, when every BUY, SELL and READY TO BUY is sent once as an alert. The settings panel changes the thresholds.</li>
         <li><b>RSI, MACD, ADX, Stoch, Band</b>: daily readings on every row (14-day RSI, 12/26/9 MACD, 14-day ADX with its direction, 14/3 stochastic, position inside the 20-day 2σ Bollinger band). They are readings, not filters.</li>
         <li><b>Option chains</b> come from Cboe's free delayed quotes (cdn.cboe.com, every expiry in one file, no login), with Yahoo as the fallback; set SCREENER_OPTIONS_SOURCE=yahoo to use Yahoo only. A name whose chain could not be read is tried again on the next screen; when chains are missing, the note above the lists says why and <code>GET /api/chains/status</code> has the details.</li>
+        <li><b>Chain</b> (button on each Core row): the stock's option chain under its row. Put open interest to the left, call open interest to the right, by strike, for the 30 strikes nearest the price, with the call wall, put wall, King and the price marked, and IV and net gamma per strike. Pick all expiries in the 45-day window or one expiry. Read when you open it and kept for 15 minutes.</li>
         <li><b>GEX levels</b>: every listed stock's option chain is read once a day (8:00 AM ET on weekdays, and on the first screen for a name that is new that day). Open interest is summed by strike across the expiries in the next 45 days. Call wall: the strike with the most call open interest. Put wall: the strike with the most put open interest. King: the strike with the largest net gamma exposure. Each shows its open interest and its share of all open interest in the window. Expiry is the date holding the most open interest; "as of" flags a chain that could not be refreshed today.</li>
         <li><b>Session phases</b> (Sessions tab): Asia 6 PM–2 AM, London 2–8 AM, New York 8 AM–5 PM ET, each scored 0–100% for accumulation (tight, quiet balance), manipulation (sweeps the prior session's high or low and closes back inside), absorption (heavy effort, no progress) and distribution (a one-way expansion). Scored on 5-minute candles only, so every timeframe shows the same boxes. Bull/Bear comes from the close location, the swept side or the body direction.</li>
         <li><b>Market line</b>: SPY, QQQ and IWM against today's VWAP, and advancers/decliners on Nasdaq and NYSE.</li>
@@ -910,6 +976,7 @@
       <ul>
         <li><code>GET /api/screen</code>: the full snapshot, every row and the market line.</li>
         <li><code>GET /api/prices</code>: the light payload the page polls every 10 seconds.</li>
+        <li><code>GET /api/chain/{ticker}?expiry=ALL</code>: one stock's option chain by strike (call and put open interest, IV, net gamma) with its walls and King; the <b>Chain</b> button on each Core row shows it.</li>
         <li><code>GET /api/chains/status</code>: why option chains are or are not loading (source, Cboe and Yahoo errors, last run's counts). <code>POST /api/chains/refresh</code> reads them all again now.</li>
         <li><code>GET /api/pv</code>: PV Confirm rows (uptrend and downtrend), SPY's state and the settings. <code>POST /api/pv/refresh</code> re-runs it; <code>GET|PUT /api/pv/settings</code> reads or saves the settings; <code>GET /api/pv/alerts</code> lists the 4:15 PM alerts.</li>
         <li><code>POST /api/refresh</code>: run the screen now.</li>

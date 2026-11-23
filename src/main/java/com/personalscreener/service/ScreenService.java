@@ -437,6 +437,48 @@ public class ScreenService {
         return String.join(" · ", e);
     }
 
+    private final Map<String, Map.Entry<Instant, YahooClient.ChainResult>> chainViewCache = new ConcurrentHashMap<>();
+
+    /**
+     * The option chain for the Screen page: strikes within 40% of the price with call and put open interest, IV and
+     * net gamma, summed over every expiry in the window ({@code expiry} = ALL) or for one expiry, plus the walls
+     * and King for that selection. Kept for 15 minutes.
+     */
+    public Map<String, Object> chainView(String symbol, String expiry) {
+        LocalDate today = clock.now().toLocalDate();
+        var cached = chainViewCache.get(symbol);
+        YahooClient.ChainResult cr;
+        if (cached != null && cached.getKey().isAfter(Instant.now().minus(Duration.ofMinutes(15)))) cr = cached.getValue();
+        else {
+            cr = chains(symbol, today);
+            if (cr.answered()) chainViewCache.put(symbol, Map.entry(Instant.now(), cr));
+        }
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("symbol", symbol);
+        m.put("source", lastChainSource);
+        m.put("readAt", cached != null && cr == cached.getValue() ? cached.getKey().toString() : Instant.now().toString());
+        List<OptionChain> all = cr.chains();
+        if (all.isEmpty()) {
+            m.put("error", cr.answered() ? symbol + " has no listed options" : "Could not read the chain: " + chainError());
+            return m;
+        }
+        StockRow row = snapshot.rows.stream().filter(x -> x.symbol.equals(symbol)).findFirst().orElse(null);
+        double spot = row != null && row.price != null ? row.price : all.get(0).spot();
+        List<OptionChain> sel = expiry == null || expiry.isBlank() || expiry.equalsIgnoreCase("ALL") ? all
+                : all.stream().filter(c -> c.expiry().toString().equals(expiry)).toList();
+        if (sel.isEmpty()) sel = all;
+        m.put("spot", spot);
+        m.put("expiries", all.stream().map(c -> Map.of("date", c.expiry().toString(),
+                "oi", c.calls().stream().mapToDouble(OptionChain.Strike::openInterest).sum()
+                        + c.puts().stream().mapToDouble(OptionChain.Strike::openInterest).sum())).toList());
+        m.put("selected", sel.size() == all.size() ? "ALL" : sel.get(0).expiry().toString());
+        m.put("levels", GexCalculator.compute(sel, spot, today));
+        double lo = spot * 0.6, hi = spot * 1.4;
+        m.put("strikes", GexCalculator.byStrike(sel, spot, today).stream()
+                .filter(k -> k.strike() >= lo && k.strike() <= hi && (k.callOi() > 0 || k.putOi() > 0)).toList());
+        return m;
+    }
+
     /** For GET /api/chains/status. */
     public Map<String, Object> chainStatus() {
         Map<String, Object> m = new LinkedHashMap<>();
