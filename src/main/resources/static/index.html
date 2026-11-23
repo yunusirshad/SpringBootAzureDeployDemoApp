@@ -42,6 +42,14 @@
 
   <div id="pulse" class="pulse">—</div>
 
+  <div class="card biascard" id="biasCard">
+    <div class="card-head"><h2>Market bias today</h2>
+      <div class="pvhead"><span class="muted small" id="biasStamp"></span>
+        <button id="biasRefresh" class="ghost small" type="button">Check now</button>
+        <button id="biasTest" class="ghost small" type="button">Send test alert</button></div></div>
+    <div id="biasBody"><p class="muted">Loading…</p></div>
+  </div>
+
   <div class="toolbar">
     <input id="search" type="search" placeholder="Search ticker" autocomplete="off">
     <select id="signalFilter" aria-label="Signal">

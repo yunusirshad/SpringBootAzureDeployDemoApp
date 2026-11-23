@@ -16,6 +16,7 @@ public class ScreenerProperties {
     private Zoya zoya = new Zoya();
     private Yahoo yahoo = new Yahoo();
     private Options options = new Options();
+    private Notify notify = new Notify();
     private TradingView tradingview = new TradingView();
     private Sec sec = new Sec();
     /** Symbols to screen when TradingView cannot be reached, so the app still has a universe. */
@@ -119,6 +120,27 @@ public class ScreenerProperties {
         public void setCacheHours(int v) { cacheHours = v; }
     }
 
+    /** Phone alerts. Each channel is on only when its settings are filled in. */
+    public static class Notify {
+        /** Telegram: a bot token from @BotFather and your chat id. */
+        private String telegramToken = "";
+        private String telegramChatId = "";
+        /** ntfy: a topic name (subscribe to it in the ntfy app); the server defaults to ntfy.sh. */
+        private String ntfyTopic = "";
+        private String ntfyServer = "https://ntfy.sh";
+
+        public String getTelegramToken() { return telegramToken; }
+        public void setTelegramToken(String v) { telegramToken = v; }
+        public String getTelegramChatId() { return telegramChatId; }
+        public void setTelegramChatId(String v) { telegramChatId = v; }
+        public String getNtfyTopic() { return ntfyTopic; }
+        public void setNtfyTopic(String v) { ntfyTopic = v; }
+        public String getNtfyServer() { return ntfyServer; }
+        public void setNtfyServer(String v) { ntfyServer = v; }
+        public boolean telegram() { return !telegramToken.isBlank() && !telegramChatId.isBlank(); }
+        public boolean ntfy() { return !ntfyTopic.isBlank(); }
+    }
+
     public static class Options {
         /** "cboe" (default): Cboe's delayed quotes, with Yahoo as the fallback. "yahoo": Yahoo only. */
         private String source = "cboe";
@@ -170,6 +192,8 @@ public class ScreenerProperties {
     public void setZoya(Zoya v) { zoya = v; }
     public Yahoo getYahoo() { return yahoo; }
     public Options getOptions() { return options; }
+    public Notify getNotify() { return notify; }
+    public void setNotify(Notify v) { notify = v; }
     public void setOptions(Options v) { options = v; }
     public void setYahoo(Yahoo v) { yahoo = v; }
     public TradingView getTradingview() { return tradingview; }

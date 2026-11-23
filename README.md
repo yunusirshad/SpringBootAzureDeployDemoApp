@@ -23,6 +23,8 @@ Open http://localhost:8080. The first screen runs at startup and then every 15 m
 | `SCREENER_SEC_USER_AGENT` | SEC asks for a name and contact email, e.g. `MyScreener you@example.com`. |
 | `SCREENER_YAHOO_CRUMB` | `true` (default) uses Yahoo's session for bid/ask, option chains and earnings dates. |
 | `SCREENER_OPTIONS_SOURCE` | `cboe` (default): option chains from Cboe delayed quotes, Yahoo as the fallback. `yahoo`: Yahoo only. |
+| `SCREENER_NTFY_TOPIC` | ntfy topic for phone alerts (market bias at 9:30 AM ET). |
+| `SCREENER_TELEGRAM_TOKEN`, `SCREENER_TELEGRAM_CHAT_ID` | Telegram bot token and chat id for phone alerts. |
 | `PORT` | HTTP port, default 8080. |
 
 The filters, quality clips and fallback ticker list are in `src/main/resources/application.yml` under `screener:`.
@@ -37,6 +39,15 @@ The filters, quality clips and fallback ticker list are in `src/main/resources/a
    - **Trend class** (each row's colour), from completed daily candles: Strong Uptrend, Early Bullish Reversal, Early Bearish Reversal or No Uptrend. Fewer than 200 daily candles stays No Uptrend.
    - RSI, MACD, ADX, stochastic and Bollinger position show on every row. They are readings, not filters.
 5. **GEX.** Each name's option chain is read once a day (8:00 AM ET on weekdays, or on the first screen a new name appears in). Open interest is summed by strike over the expiries in the next 45 days: the call wall is the strike with the most call open interest, the put wall the strike with the most put open interest, and King the strike with the largest net gamma. Expiry is the date holding the most open interest. Chains come from Cboe's free delayed quotes (`cdn.cboe.com`, no login), with Yahoo as the fallback (needs its cookie session, `SCREENER_YAHOO_CRUMB=true`, the default). `SCREENER_OPTIONS_SOURCE=yahoo` uses Yahoo only. The **Chain** button on each Core row opens the stock's chain under it (open interest by strike, puts left and calls right, with the walls, King and price marked; all expiries or one). If chains are missing, the note above the lists says why; `GET /api/chains/status` has the details and `POST /api/chains/refresh` reads them again.
+
+## Market bias bot
+
+At 9:30 AM ET each trading day the app calls the day **Bullish**, **Bearish** or **Neutral** from S&P and Nasdaq futures overnight, SPY's premarket gap, SPY against its 20-day EMA and 200-day average, SPY's 5-day change, VIX, and the ES London and Asia session phases. It alerts in the page (card at the top of the Screen tab, and a browser notification) and, when set up, on your phone:
+
+- **ntfy** (simplest): install the ntfy app, subscribe to a topic name only you know, and start the app with `SCREENER_NTFY_TOPIC=<that topic>`.
+- **Telegram**: create a bot with @BotFather, send it a message, and start the app with `SCREENER_TELEGRAM_TOKEN=<bot token>` and `SCREENER_TELEGRAM_CHAT_ID=<your chat id>`.
+
+"Send test alert" on the card checks the phone channels. After the close the app records SPY's open-to-close move and whether the call was right, and the card shows the hit rate.
 
 ## PV Confirm Signals
 

@@ -256,3 +256,13 @@ canvas.seschart { width: 100%; height: 540px; display: block; margin: 6px 0 12px
   .chainhdr, .crow { grid-template-columns: 1fr 96px 1fr; }
   .cmeta, .chainhdr span:nth-child(4) { display: none; }
 }
+
+/* market bias */
+.biasbig { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 14px; padding: 10px 14px; border-radius: 8px; margin-bottom: 10px; }
+.biasbig.up { background: var(--bull-bg); } .biasbig.down { background: var(--bear-bg); } .biasbig.mixed { background: var(--mixed-bg); }
+.biaslabel { font-size: 26px; font-weight: 800; letter-spacing: .02em; }
+.biasbig.up .biaslabel { color: var(--bull); } .biasbig.down .biaslabel { color: var(--bear); } .biasbig.mixed .biaslabel { color: var(--mixed); }
+.biassub { color: var(--text); font-weight: 600; }
+.biasgrid { display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr); gap: 16px; }
+@media (max-width: 900px) { .biasgrid { grid-template-columns: minmax(0, 1fr); } }
+.biasmini { font-weight: 700; } .biasmini.up { color: var(--bull); } .biasmini.down { color: var(--bear); } .biasmini.mixed { color: var(--mixed); }

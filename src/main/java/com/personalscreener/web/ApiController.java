@@ -30,10 +30,12 @@ public class ApiController {
     private final ScreenerProperties props;
     private final ZoyaService zoya;
     private final PvService pv;
+    private final BiasService bias;
 
     public ApiController(ScreenService screen, WatchlistService watchlist, AlertService alerts, AnalyzeService analyze,
                          TechnicalsService technicals, BacktestService backtest, SessionService sessions, MarketClock clock,
-                         ScreenerProperties props, ZoyaService zoya, PvService pv) {
+                         ScreenerProperties props, ZoyaService zoya, PvService pv, BiasService bias) {
+        this.bias = bias;
         this.zoya = zoya;
         this.pv = pv;
         this.sessions = sessions;
@@ -91,6 +93,8 @@ public class ApiController {
         m.put("rows", rows);
         m.put("alerts", screen.recentAlerts());
         m.put("pvAlerts", pv.recentAlerts());
+        var todayBias = bias.today(clock.now().toLocalDate());
+        if (todayBias != null) m.put("bias", Map.of("date", todayBias.date, "title", BiasService.title(todayBias), "summary", todayBias.summary));
         m.put("generatedAt", s.generatedAt);
         m.put("running", screen.isRunning());
         return m;
@@ -215,6 +219,26 @@ public class ApiController {
         screen.refreshChainsNow();
         return Map.of("started", true);
     }
+
+    // ---- market bias ---------------------------------------------------------------------------
+
+    /** Today's 9:30 call (or a preview before then), the history with outcomes, accuracy and phone channels. */
+    @GetMapping("/bias")
+    public Map<String, Object> bias(@RequestParam(defaultValue = "false") boolean refresh) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        var today = bias.today(clock.now().toLocalDate());
+        m.put("today", today);
+        m.put("preview", today == null || refresh ? bias.preview(refresh) : null);
+        m.put("history", bias.history());
+        m.put("accuracy", bias.accuracy());
+        m.put("channels", bias.channels());
+        m.put("callTime", "9:30 AM ET, trading days");
+        return m;
+    }
+
+    /** Sends a test message to the phone channels. */
+    @PostMapping("/bias/test")
+    public Map<String, Object> biasTest() { return Map.of("result", bias.testAlert()); }
 
     // ---- PV Confirm ---------------------------------------------------------------------------
 

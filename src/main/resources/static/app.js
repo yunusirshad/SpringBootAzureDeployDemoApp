@@ -427,6 +427,7 @@
       if (finished || p.generatedAt !== data.snapshot.generatedAt) { loadScreen(); } else if (!document.activeElement?.closest('.toolbar,.gexfilters,#addForm')) { render(); }
       handleRang(p.alerts || []);
       handlePvAlerts(p.pvAlerts || []);
+      handleBias(p.bias);
     } catch { /* keep the last view */ }
   }
 
@@ -446,6 +447,62 @@
     if ($('#tab-alerts').classList.contains('active')) loadAlerts();
   }
 
+
+
+  // ---------- market bias ----------
+  let biasData = null;
+  async function loadBias(refresh = false) {
+    try { biasData = await api('api/bias' + (refresh ? '?refresh=true' : '')); renderBias(); }
+    catch (err) { $('#biasBody').innerHTML = `<p class="msg err">${esc(err.message)}</p>`; }
+  }
+
+  function renderBias() {
+    const d = biasData;
+    if (!d) return;
+    const r = d.today || d.preview;
+    const live = !!d.today;
+    $('#biasStamp').textContent = live ? `Called ${etStamp(r.at)}${r.late ? ' (late: the app started after 9:30)' : ''}` : `Preview ${r ? etStamp(r.at) : ''} · the call is made at 9:30 AM ET`;
+    if (!r) { $('#biasBody').innerHTML = '<p class="muted">No reading yet.</p>'; return; }
+    const cls = r.bias === 'Bullish' ? 'up' : r.bias === 'Bearish' ? 'down' : 'mixed';
+    const factors = (r.factors || []).map((f) => `<tr><td>${esc(f.name)}</td><td>${esc(f.reading)}</td>
+      <td class="num"><b class="${f.points > 0 ? 'up' : f.points < 0 ? 'down' : 'muted'}">${f.points > 0 ? '+' : ''}${f.points}</b><span class="muted"> / ±${f.max}</span></td></tr>`).join('');
+    const acc = d.accuracy || {};
+    const hist = (d.history || []).slice(0, 10).map((h) => `<tr><td>${esc(h.date)}</td>
+      <td><span class="biasmini ${h.bias === 'Bullish' ? 'up' : h.bias === 'Bearish' ? 'down' : 'mixed'}">${esc(h.bias)}</span> <span class="muted">${h.score > 0 ? '+' : ''}${h.score}</span></td>
+      <td class="num">${isNum(h.spyChangePct) ? signed(h.spyChangePct) : '<span class="muted">—</span>'}</td>
+      <td>${h.correct === true ? '<span class="up">✓ right</span>' : h.correct === false ? '<span class="down">✗ wrong</span>' : '<span class="muted">—</span>'}</td></tr>`).join('');
+    const channels = (d.channels || []).length ? `Phone alerts: ${esc(d.channels.join(', '))}` : 'Phone alerts: off (set SCREENER_NTFY_TOPIC, or SCREENER_TELEGRAM_TOKEN and SCREENER_TELEGRAM_CHAT_ID)';
+    $('#biasBody').innerHTML = `
+      <div class="biasbig ${cls}"><span class="biaslabel">${esc(r.bias.toUpperCase())}</span>
+        <span class="biassub">${esc(r.summary)}${live ? '' : ' · preview'}</span></div>
+      <div class="biasgrid">
+        <div class="tablewrap"><table class="grid"><thead><tr><th>Factor</th><th>Reading</th><th class="num">Points</th></tr></thead><tbody>${factors}</tbody></table></div>
+        <div>
+          <div class="muted small">Last calls · SPY open to close${isNum(acc.pct) ? ` · right ${acc.right} of ${acc.judged} (${acc.pct}%)` : ''}</div>
+          <div class="tablewrap"><table class="grid"><thead><tr><th>Date</th><th>Call</th><th class="num">SPY</th><th>Result</th></tr></thead>
+            <tbody>${hist || '<tr class="empty"><td colspan="4">The first call is made at 9:30 AM ET on the next trading day.</td></tr>'}</tbody></table></div>
+          <p class="meta">${channels}. It is a read of the open, not a forecast; Neutral days are not scored.</p>
+        </div>
+      </div>`;
+  }
+
+  $('#biasRefresh').addEventListener('click', () => { $('#biasBody').insertAdjacentHTML('afterbegin', '<p class="muted small">Checking…</p>'); loadBias(true); });
+  $('#biasTest').addEventListener('click', async () => {
+    try { const r = await api('api/bias/test', { method: 'POST' }); toast(r.result.join(' · ')); } catch (err) { toast(err.message); }
+  });
+
+  function handleBias(b) {
+    if (!b) return;
+    const seen = store.get('seenBias', '');
+    if (seen === b.date) return;
+    store.set('seenBias', b.date);
+    toast(`${b.title} — ${b.summary}`);
+    try { if ('Notification' in window && Notification.permission === 'granted') new Notification(b.title, { body: b.summary }); } catch { /* ignore */ }
+    loadBias();
+  }
+
+  loadBias();
+  setInterval(() => loadBias(), 5 * 60_000);
 
   // ---------- PV Confirm ----------
   const PV_LABEL = { READY_TO_BUY: 'READY TO BUY', BUY: 'BUY', IN_TRADE: 'IN TRADE', SELL: 'SELL', WAIT: 'WAIT', NA_DOWNTREND: 'N/A – Downtrend' };
@@ -961,6 +1018,7 @@
         <li><b>To breakout</b>: the distance to the higher of today's premarket high and the prior day's high.</li>
         <li><b>Bias</b>: close against a rising or falling 20 EMA on completed 15-minute, 1-hour and 4-hour candles. More up than down is Bullish, more down is Bearish, otherwise Mixed.</li>
         <li><b>Trend class</b> (the row colour): from completed daily candles, using the 20 EMA and the 50- and 200-day averages only. <b>Strong Uptrend</b>: 50-day above the 200-day, close above the 50-day and the 20 EMA. <b>Early Bullish Reversal</b>: the 50-day crossed above the 200-day in the last 15 sessions, or the close reclaimed the 50-day and a rising 20 EMA while the 50-day is still below the 200-day. <b>Early Bearish Reversal</b>: 50-day above the 200-day but the close lost the 50-day, or sits under a falling 20 EMA. <b>No Uptrend</b>: anything else; fewer than 200 daily candles means no structure, so it stays No Uptrend.</li>
+        <li><b>Market bias</b> (card at the top): at 9:30 AM ET each trading day the app calls the day Bullish, Bearish or Neutral and alerts in the page and, when set up, on your phone (Telegram or ntfy). Points: S&amp;P futures overnight from the prior 4:00 PM (±2 beyond 0.3%, ±1 beyond 0.1%), Nasdaq futures overnight (±1 beyond 0.3%), SPY's premarket gap (±1 beyond 0.25%), SPY against its 20-day EMA (±1), SPY's regime (+1 above its SMA200 with SMA50 over SMA200, −1 below its SMA200), SPY's 5-day change (±1 beyond 1%), VIX (−1 above 25 or 10% over its 10-day average; +1 under 16 and falling), and the ES London and Asia session phases from the Sessions indicator (±1 for a Bull or Bear phase of 60% or more). +2 or more is Bullish, −2 or less Bearish, else Neutral with its lean; 6+ is strong, 4–5 moderate. After the close it records SPY's open-to-close move and whether the call was right. Before 9:30 the card shows a preview.</li>
         <li><b>PV Confirm Signals</b>: nested under the trend check (SMA50 above SMA200, unchanged), on daily bars, long only.
           <b>Uptrend</b>: the four rules are close above SMA200, SPY above its SMA200, RSI(2) under 10 and volume under its 50-day average (the average includes the day). All four on a completed bar is a <b>BUY</b>; the trade enters at the next open, with the stop at entry − 2.5 × ATR(14) of the signal bar. <b>IN TRADE</b> until the first exit, checked on each completed bar from the entry bar on: <b>STOP</b> when the low touches the stop (filled at the stop, or the open on a gap below), <b>TAKE PROFIT</b> on the first close above the entry, <b>TIME EXIT</b> at the close of the 10th bar. The bar it exits on shows <b>SELL</b> with the reason; when a new BUY fires on the same bar, the SELL shows first and the note says so. <b>READY TO BUY</b>: the other three rules pass and RSI(2) is under 20 but not yet under 10. WAIT and READY TO BUY show the <b>expected buy</b> (the highest next close that would put RSI(2) under 10, solved from the Wilder averages; today's close when RSI(2) is already there), the expected stop (that − 2.5 × ATR) and an expected target (the 5-day average including that close, where an RSI(2) dip usually reverts; the trade itself still exits on the first close above the entry). <b>Near Setup</b>: 3 of the 4 rules pass while flat. Everything else is <b>WAIT</b>.
           <b>Downtrend</b>: no new entries, shown as N/A – Downtrend. A trade opened in the uptrend is still tracked to its SELL after the flip, and stays listed even if the name drops off the screen.
@@ -978,6 +1036,7 @@
         <li><code>GET /api/prices</code>: the light payload the page polls every 10 seconds.</li>
         <li><code>GET /api/chain/{ticker}?expiry=ALL</code>: one stock's option chain by strike (call and put open interest, IV, net gamma) with its walls and King; the <b>Chain</b> button on each Core row shows it.</li>
         <li><code>GET /api/chains/status</code>: why option chains are or are not loading (source, Cboe and Yahoo errors, last run's counts). <code>POST /api/chains/refresh</code> reads them all again now.</li>
+        <li><code>GET /api/bias</code>: today's market-bias call (or a preview), the last calls with SPY's result and the accuracy; <code>?refresh=true</code> reads it again now. <code>POST /api/bias/test</code> sends a test phone alert.</li>
         <li><code>GET /api/pv</code>: PV Confirm rows (uptrend and downtrend), SPY's state and the settings. <code>POST /api/pv/refresh</code> re-runs it; <code>GET|PUT /api/pv/settings</code> reads or saves the settings; <code>GET /api/pv/alerts</code> lists the 4:15 PM alerts.</li>
         <li><code>POST /api/refresh</code>: run the screen now.</li>
         <li><code>GET /api/watchlist</code>, <code>POST /api/watchlist {"tickers":"SRTA, AUR"}</code>, <code>DELETE /api/watchlist/{ticker}</code>, <code>GET /api/watchlist/export</code>.</li>
