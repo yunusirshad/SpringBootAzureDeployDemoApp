@@ -38,6 +38,7 @@ public class ScreenService {
 
     private final ScreenerProperties props;
     private final CboeClient cboe;
+    private final SignalAlertService signalAlerts;
     private final TradingViewClient tv;
     private final YahooClient yahoo;
     private final ZoyaService zoya;
@@ -66,8 +67,9 @@ public class ScreenService {
 
     public ScreenService(ScreenerProperties props, TradingViewClient tv, YahooClient yahoo, ZoyaService zoya,
                          StockAnalyzer analyzer, WatchlistService watchlist, AlertService alerts,
-                         MarketClock clock, JsonStore store, CboeClient cboe) {
+                         MarketClock clock, JsonStore store, CboeClient cboe, SignalAlertService signalAlerts) {
         this.props = props;
+        this.signalAlerts = signalAlerts;
         this.cboe = cboe;
         this.tv = tv;
         this.yahoo = yahoo;
@@ -330,6 +332,7 @@ public class ScreenService {
                     ? "Early Bearish Reversal: not a Strong Uptrend or Early Bullish Reversal, so it stays off Core"
                     : "No uptrend, so it stays off Core";
         }
+        signalAlerts.check(core);
         s.compliant = (int) s.rows.stream().filter(r -> r.screenPass && "COMPLIANT".equals(r.zoya)).count();
         s.chainsAvailable = !gexCache.isEmpty();
         s.chainNote = chainNote;

@@ -31,10 +31,13 @@ public class ApiController {
     private final ZoyaService zoya;
     private final PvService pv;
     private final BiasService bias;
+    private final SignalAlertService signalAlerts;
 
     public ApiController(ScreenService screen, WatchlistService watchlist, AlertService alerts, AnalyzeService analyze,
                          TechnicalsService technicals, BacktestService backtest, SessionService sessions, MarketClock clock,
-                         ScreenerProperties props, ZoyaService zoya, PvService pv, BiasService bias) {
+                         ScreenerProperties props, ZoyaService zoya, PvService pv, BiasService bias,
+                         SignalAlertService signalAlerts) {
+        this.signalAlerts = signalAlerts;
         this.bias = bias;
         this.zoya = zoya;
         this.pv = pv;
@@ -93,6 +96,7 @@ public class ApiController {
         m.put("rows", rows);
         m.put("alerts", screen.recentAlerts());
         m.put("pvAlerts", pv.recentAlerts());
+        m.put("signalAlerts", signalAlerts.recent());
         var todayBias = bias.today(clock.now().toLocalDate());
         if (todayBias != null) {
             var last = todayBias.intraday.isEmpty() ? null : todayBias.intraday.get(todayBias.intraday.size() - 1);
@@ -274,6 +278,10 @@ public class ApiController {
         pv.refreshAsync();
         return saved;
     }
+
+    /** BUY NOW and SELL NOW alerts for the Core list, newest first. */
+    @GetMapping("/signal-alerts")
+    public List<SignalAlertService.SignalAlert> signalAlerts() { return signalAlerts.all(); }
 
     @GetMapping("/pv/alerts")
     public List<PvService.PvAlert> pvAlerts() { return pv.alerts(); }

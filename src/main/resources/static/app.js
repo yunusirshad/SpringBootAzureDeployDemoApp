@@ -428,6 +428,7 @@
       handleRang(p.alerts || []);
       handlePvAlerts(p.pvAlerts || []);
       handleBias(p.bias);
+      handleSignalAlerts(p.signalAlerts || []);
     } catch { /* keep the last view */ }
   }
 
@@ -448,6 +449,34 @@
   }
 
 
+
+  // ---------- BUY NOW / SELL NOW alerts ----------
+  const seenSig = new Set(store.get('seenSig', []));
+  function sigTitle(a) { return `${a.signal === 'BUY_NOW' ? 'BUY NOW' : 'SELL NOW'} ${a.symbol}${isNum(a.price) ? ' at ' + money(a.price) : ''}${a.superStock ? ' ★' : ''}`; }
+  function handleSignalAlerts(list) {
+    const fresh = list.filter((a) => !seenSig.has(a.id));
+    if (!fresh.length) return;
+    fresh.forEach((a) => {
+      seenSig.add(a.id);
+      const body = [isNum(a.stop) ? `Stop ${money(a.stop)} · target ${money(a.target)}` : '', a.why || ''].filter(Boolean).join(' — ');
+      toast(`${sigTitle(a)}${body ? ' — ' + body : ''}`);
+      try { if ('Notification' in window && Notification.permission === 'granted') new Notification(sigTitle(a), { body }); } catch { /* ignore */ }
+    });
+    store.set('seenSig', [...seenSig].slice(-300));
+    const b = $('#alertBadge');
+    b.textContent = fresh.length;
+    b.classList.remove('hidden');
+  }
+  async function loadSignalAlerts() {
+    try {
+      const list = await api('api/signal-alerts');
+      $('#signalAlertTable').innerHTML = '<thead><tr><th>When</th><th>Ticker</th><th>Signal</th><th class="num">Price</th><th class="num">Stop</th><th class="num">Target</th><th>Why</th></tr></thead><tbody>'
+        + (list.map((a) => `<tr><td>${esc(etStamp(a.at))}</td><td><a href="#" class="tkr" data-ses="${esc(a.symbol)}">${esc(a.symbol)}</a>${a.superStock ? ' ★' : ''}</td>
+          <td><span class="sig ${esc(a.signal)}">${a.signal === 'BUY_NOW' ? 'Buy now' : 'Sell now'}</span></td><td class="num">${money(a.price)}</td>
+          <td class="num">${money(a.stop)}</td><td class="num">${money(a.target)}</td><td class="meta">${esc(a.why || '')}${(a.sent || []).length ? ' · ' + esc(a.sent.join(', ')) : ''}</td></tr>`).join('')
+          || '<tr class="empty"><td colspan="7">No Buy now or Sell now alerts yet. They fire during market hours, 9:30 AM to 4:00 PM ET.</td></tr>') + '</tbody>';
+    } catch { /* ignore */ }
+  }
 
   // ---------- market bias ----------
   let biasData = null;
@@ -686,6 +715,7 @@
     $('#alertTable').innerHTML = '<thead><tr><th>Ticker</th><th>Condition</th><th>Note</th><th>Status</th><th></th></tr></thead><tbody>'
       + (rows || '<tr class="empty"><td colspan="5">No alerts yet.</td></tr>') + '</tbody>';
     loadPvAlerts();
+    loadSignalAlerts();
   }
 
   $('#alertForm').addEventListener('submit', async (e) => {
@@ -1023,6 +1053,7 @@
           <b>session phase</b> 20 (the latest pre-market or New York session from the Sessions indicator: Bull Distribution 20, Bull Absorption 16, Bear Absorption 12, Bull Manipulation 10, Bull Accumulation 8, times its percent);
           <b>long score</b> 30 (the long score × 0.3).
           Names are grouped by signal first (Buy now, Ready to buy, Ready to sell, Sell now, Hold, Wait), then by the setup score. A Wait shows the expected buy (the breakout level), its stop (today's low or the put wall, at least ¼ ATR under) and target (buy + 1 ATR, capped at the call wall). The <b>super stock</b> is the best Buy now name (or Ready to buy when there is no Buy now). It stays first whatever the sort.</li>
+        <li><b>Buy now / Sell now alerts</b>: during market hours (9:30 AM to 4:00 PM ET on trading days), when a Core stock's signal is Buy now or Sell now the app alerts once per stock, per signal, per day: a pop-up and browser notification here, and Telegram or ntfy on your phone when set up. A Buy now alert carries the stop and target from the setup; a Sell now alert says why. They are listed on the Alerts tab.</li>
         <li><b>Signals</b>. Sell signals are about leaving a long and are checked first.
           <b>Sell now</b>: an Early Bearish Reversal below the 1h 20 EMA with a bias that is not Bullish; or the price at or above the call wall; or 100% of the ATR range used into a Bear session of 60% or more.
           <b>Ready to sell</b>: an Early Bearish Reversal; below the 1h 20 EMA with a Bearish bias; 100% of the ATR range used; earnings inside 3 trading days; or a Bear Distribution or Bear Manipulation session of 70% or more.
@@ -1058,6 +1089,7 @@
         <li><code>GET /api/prices</code>: the light payload the page polls every 10 seconds.</li>
         <li><code>GET /api/chain/{ticker}?expiry=ALL</code>: one stock's option chain by strike (call and put open interest, IV, net gamma) with its walls and King; the <b>Chain</b> button on each Core row shows it.</li>
         <li><code>GET /api/chains/status</code>: why option chains are or are not loading (source, Cboe and Yahoo errors, last run's counts). <code>POST /api/chains/refresh</code> reads them all again now.</li>
+        <li><code>GET /api/signal-alerts</code>: the Buy now and Sell now alerts, newest first.</li>
         <li><code>GET /api/bias</code>: today's market-bias call (or a preview), the last calls with SPY's result and the accuracy; <code>?refresh=true</code> reads it again now. <code>POST /api/bias/test</code> sends a test phone alert.</li>
         <li><code>GET /api/pv</code>: PV Confirm rows (uptrend and downtrend), SPY's state and the settings. <code>POST /api/pv/refresh</code> re-runs it; <code>GET|PUT /api/pv/settings</code> reads or saves the settings; <code>GET /api/pv/alerts</code> lists the 4:15 PM alerts.</li>
         <li><code>POST /api/refresh</code>: run the screen now.</li>
