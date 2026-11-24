@@ -62,7 +62,7 @@ public class ScreenerProperties {
         private int passScore = 60;
         private double minDollarVolume = 2_000_000;
         private double maxSpreadBps = 50;
-        private double relVolMin = 0.5, relVolMax = 2;
+        private double relVolMin = 0.5, relVolMax = 10;
         private double dollarVolMin = 500_000, dollarVolMax = 20_000_000;
         private double spreadMin = 5, spreadMax = 80;
         private double floatMin = 2_000_000, floatMax = 50_000_000;
@@ -106,6 +106,8 @@ public class ScreenerProperties {
         private String url = "https://api.zoya.finance/graphql";
         /** Re-check a name after this many hours. */
         private int cacheHours = 24;
+        /** A status whose last successful check is older than this many days is shown as Stale and kept off Core. */
+        private int staleDays = 7;
 
         public String getSource() { return source; }
         public void setSource(String v) { source = v; }
@@ -118,6 +120,8 @@ public class ScreenerProperties {
         public void setUrl(String v) { url = v; }
         public int getCacheHours() { return cacheHours; }
         public void setCacheHours(int v) { cacheHours = v; }
+        public int getStaleDays() { return staleDays; }
+        public void setStaleDays(int v) { staleDays = v; }
     }
 
     /** Phone alerts. Each channel is on only when its settings are filled in. */

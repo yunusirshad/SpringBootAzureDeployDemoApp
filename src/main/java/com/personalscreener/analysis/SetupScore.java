@@ -4,6 +4,9 @@ import com.personalscreener.model.GexLevels;
 import com.personalscreener.model.Num;
 import com.personalscreener.model.StockRow;
 
+import java.time.DayOfWeek;
+import java.time.LocalTime;
+import java.time.ZonedDateTime;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -88,6 +91,43 @@ public final class SetupScore {
 
     public record Signal(String signal, List<String> notes) {}
 
+    /** Share of a normal day's volume traded by minutes since the 9:30 ET open (volume runs heavy at both ends). */
+    private static final double[][] VOLUME_CURVE = {{0, 0}, {15, 0.10}, {30, 0.16}, {60, 0.25}, {120, 0.38},
+            {180, 0.48}, {240, 0.57}, {300, 0.67}, {360, 0.80}, {390, 1.0}};
+
+    /**
+     * RVOL paced to the time of day: today's volume so far against the share of a normal day that has usually traded
+     * by now. Raw RVOL (volume / 10-day average) reads low all morning because the day is not over; at 10:30 a stock
+     * on twice its normal pace shows only about 0.5. The first 15 minutes count as 15 so one early print can't
+     * inflate it. Before the open, on weekends and after the close it is the raw RVOL.
+     */
+    public static Double pacedRelVol(Double relVol, ZonedDateTime etNow) {
+        if (relVol == null || Double.isNaN(relVol)) return null;
+        double share = 1;
+        DayOfWeek d = etNow.getDayOfWeek();
+        if (d != DayOfWeek.SATURDAY && d != DayOfWeek.SUNDAY) {
+            double m = (etNow.toLocalTime().toSecondOfDay() - 9.5 * 3600) / 60.0;
+            if (m >= 0 && m < 390) share = curve(Math.max(15, m));
+        }
+        return Num.round(relVol / share, 2);
+    }
+
+    /** Buy now needs paced RVOL of 1.5 in the first hour (9:30 to 10:30 ET) and 2.0 after. */
+    public static double rvolNeed(ZonedDateTime etNow) {
+        LocalTime t = etNow.toLocalTime();
+        return !t.isBefore(LocalTime.of(9, 30)) && t.isBefore(LocalTime.of(10, 30)) ? 1.5 : 2.0;
+    }
+
+    private static double curve(double m) {
+        for (int i = 1; i < VOLUME_CURVE.length; i++) {
+            if (m <= VOLUME_CURVE[i][0]) {
+                double[] a = VOLUME_CURVE[i - 1], b = VOLUME_CURVE[i];
+                return a[1] + (b[1] - a[1]) * (m - a[0]) / (b[0] - a[0]);
+            }
+        }
+        return 1;
+    }
+
     /**
      * For a Wait: the expected buy at the breakout level (the premarket or prior-day high; the price when it is
      * already through), the stop at support (today's low or the put wall, at least 0.25 ATR under the buy), and the
@@ -130,7 +170,8 @@ public final class SetupScore {
      *       session of 70% or more.</li>
      *   <li><b>Buy now</b>: a Strong Uptrend or Early Bullish Reversal, Zoya compliant, through the breakout level
      *       (the premarket or prior-day high), above the 1h 20 EMA, the latest session in a Bull phase, reward to
-     *       risk 1.5 or better, under 80% of the range used, and a bias that is not Bearish.</li>
+     *       risk 1.5 or better, under 80% of the range used, a bias that is not Bearish, and paced RVOL of 2x or more
+     *       (1.5x in the first hour).</li>
      *   <li><b>Ready to buy</b>: the same trend, compliance and bias, reward to risk 1 or better, and above the 1h
      *       20 EMA or within 3% of the breakout.</li>
      *   <li><b>Hold</b>: a Strong Uptrend or Early Bullish Reversal still intact (above the 1h 20 EMA or a bias that
@@ -175,6 +216,9 @@ public final class SetupScore {
             if (!ph.startsWith("Bull")) buy.add("session not in a Bull phase");
             if (!(rr >= 1.5)) buy.add("R:R under 1.5");
             if (!(Double.isNaN(used) || used < 80)) buy.add("over 80% of the range used");
+            double need = r.rvolNeed == null ? 2.0 : r.rvolNeed;
+            if (r.rvolPaced == null || r.rvolPaced < need) buy.add(r.rvolPaced == null ? "no volume reading"
+                    : String.format("RVOL %.1f× under %.1f× (paced to the time of day)", r.rvolPaced, need));
             if (buy.isEmpty()) return new Signal(BUY_NOW, List.of());
             boolean near = !Double.isNaN(toBo) && toBo <= 3;
             if (rr >= 1 && (r.above1hEma || near)) return new Signal(READY, buy);

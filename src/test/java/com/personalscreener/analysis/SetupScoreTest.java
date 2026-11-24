@@ -58,7 +58,31 @@ class SetupScoreTest {
         r.above1hEma = true;
         r.toBreakoutPct = -0.5;
         r.sessionPhase = "Bull Distribution";
+        r.rvolPaced = 2.4;
+        r.rvolNeed = 2.0;
         return r;
+    }
+
+    @Test
+    void lowPacedVolumeBlocksBuyNow() {
+        StockRow r = buyable();
+        r.rvolPaced = 1.6;
+        var s = SetupScore.signal(r);
+        assertEquals(SetupScore.READY, s.signal());
+        assertTrue(s.notes().get(0).startsWith("RVOL 1.6"));
+        r.rvolNeed = 1.5;                       // first hour: 1.5x is enough
+        assertEquals(SetupScore.BUY_NOW, SetupScore.signal(r).signal());
+    }
+
+    @Test
+    void rvolIsPacedToTheTimeOfDay() {
+        java.time.ZoneId ny = java.time.ZoneId.of("America/New_York");
+        var tue1030 = java.time.ZonedDateTime.of(2026, 11, 24, 10, 30, 0, 0, ny);
+        assertEquals(2.0, SetupScore.pacedRelVol(0.5, tue1030));          // 25% of a day by 10:30 -> 0.5 is 2x pace
+        assertEquals(2.0, SetupScore.rvolNeed(tue1030));
+        assertEquals(1.5, SetupScore.rvolNeed(tue1030.minusMinutes(1)));
+        assertEquals(0.5, SetupScore.pacedRelVol(0.5, tue1030.withHour(17))); // after the close: raw
+        assertNull(SetupScore.pacedRelVol(null, tue1030));
     }
 
     @Test

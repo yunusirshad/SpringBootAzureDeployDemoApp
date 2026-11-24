@@ -40,6 +40,10 @@ public class StockRow {
     public String zoya = "NOT_CHECKED";
     public String zoyaReportDate;
     public String zoyaCheckedAt;
+    /** True when the last successful Zoya check is over the stale limit (7 days); zoya is then "STALE". */
+    public boolean zoyaStale;
+    /** The status from that last check, kept for display when stale. */
+    public String zoyaLastStatus;
 
     // quality
     public int qualityScore;
@@ -50,6 +54,10 @@ public class StockRow {
     // price
     public Double price, previousClose, changePct, dayHigh, dayLow, dayRange, rangeUsedPct, rangeLeft;
     public Double volume, avgVolume10, avgVolume30, relVol, relVol30;
+    /** Paced RVOL: today's volume against the usual volume by this time of day (2.0 = twice the normal pace). */
+    public Double rvolPaced;
+    /** The paced RVOL Buy now needs right now: 1.5 in the first hour, 2.0 after. */
+    public Double rvolNeed;
     public String state;
 
     // daily trend

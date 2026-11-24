@@ -37,6 +37,9 @@ public class ZoyaService {
         /** True when this came from the cache rather than a fresh lookup. Not saved. */
         @com.fasterxml.jackson.annotation.JsonIgnore
         public boolean cached;
+        /** Last successful check older than the stale limit (7 days). Computed on read, not saved. */
+        @com.fasterxml.jackson.annotation.JsonProperty(access = com.fasterxml.jackson.annotation.JsonProperty.Access.READ_ONLY)
+        public boolean stale;
     }
 
     private final ZoyaClient client;
@@ -61,6 +64,22 @@ public class ZoyaService {
 
     /** @param force skip the cache and look the ticker up again now */
     public Entry get(String symbol, boolean force) {
+        Entry e = lookup(symbol, force);
+        e.stale = stale(e);
+        return e;
+    }
+
+    /** A real status (not Not checked) whose last successful check is older than {@code screener.zoya.stale-days}. */
+    public boolean stale(Entry e) {
+        if (e == null || e.checkedAt == null || ZoyaClient.Status.NOT_CHECKED.name().equals(e.status)) return false;
+        try {
+            return OffsetDateTime.parse(e.checkedAt).isBefore(OffsetDateTime.now().minus(Duration.ofDays(props.getZoya().getStaleDays())));
+        } catch (Exception ex) {
+            return true;
+        }
+    }
+
+    private Entry lookup(String symbol, boolean force) {
         String key = symbol.toUpperCase(Locale.ROOT);
         Entry e = cache.get(key);
         if (!force && fresh(e)) return asCached(e);
@@ -117,6 +136,7 @@ public class ZoyaService {
         c.source = e.source;
         c.url = e.url;
         c.cached = true;
+        c.stale = e.stale;
         return c;
     }
 

@@ -45,7 +45,7 @@ screener:
     min-dollar-volume: 2000000
     max-spread-bps: 50
     rel-vol-min: 0.5
-    rel-vol-max: 2
+    rel-vol-max: 10
     dollar-vol-min: 500000
     dollar-vol-max: 20000000
     spread-min: 5

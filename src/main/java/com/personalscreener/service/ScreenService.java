@@ -255,7 +255,9 @@ public class ScreenService {
         r.cashToDebt = Num.round(c.cashToDebt(), 2);
         r.revenueGrowth = Num.round(c.revenueGrowth(), 1);
         ZoyaService.Entry z = zoya.get(c.symbol());
-        r.zoya = z.status;
+        r.zoyaStale = z.stale;
+        r.zoyaLastStatus = z.status;
+        r.zoya = z.stale ? "STALE" : z.status;   // stale is not compliant: off Core, no buy signal
         r.zoyaReportDate = z.reportDate;
         r.zoyaCheckedAt = z.checkedAt;
         try {
@@ -298,6 +300,9 @@ public class ScreenService {
             r.riskPct = su.riskPct();
             r.rewardPct = su.rewardPct();
             r.superStock = false;
+            ZonedDateTime etNow = ZonedDateTime.now(ZoneId.of("America/New_York"));
+            r.rvolPaced = SetupScore.pacedRelVol(r.relVol, etNow);
+            r.rvolNeed = SetupScore.rvolNeed(etNow);
             SetupScore.Signal sig = SetupScore.signal(r);
             r.signal = sig.signal();
             r.signalNotes = sig.notes();

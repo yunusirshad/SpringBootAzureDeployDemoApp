@@ -39,7 +39,7 @@
   const PZ_RANK = { AT_BUY: 0, NEAR_BUY: 1, MIDDLE: 2, INSIDE: 3, NEAR_SELL: 4, AT_SELL: 5, BROKE_SUPPORT: 6, NONE: 7 };
   const SIGNAL = { BUY_NOW: 'Buy now', READY: 'Ready to buy', READY_SELL: 'Ready to sell', SELL_NOW: 'Sell now', HOLD: 'Hold', WAIT: 'Wait' };
   const TREND = { STRONG_UPTREND: 'Strong Uptrend', EARLY_BULLISH_REVERSAL: 'Early Bullish Reversal', EARLY_BEARISH_REVERSAL: 'Early Bearish Reversal', NO_UPTREND: 'No Uptrend' };
-  const zoyaLabel = { COMPLIANT: 'Compliant', NON_COMPLIANT: 'Not compliant', QUESTIONABLE: 'Questionable', NOT_COVERED: 'Not covered', NOT_CHECKED: 'Not checked' };
+  const zoyaLabel = { COMPLIANT: 'Compliant', NON_COMPLIANT: 'Not compliant', QUESTIONABLE: 'Questionable', NOT_COVERED: 'Not covered', NOT_CHECKED: 'Not checked', STALE: 'Stale' };
 
   async function api(path, opts = {}) {
     const r = await fetch(path, { headers: { 'Content-Type': 'application/json' }, ...opts });
@@ -238,7 +238,8 @@
       <div class="meter"><i class="${used > 100 ? 'over' : ''}" style="width:${Math.min(100, isNum(used) ? used : 0)}%"></i></div>
       <div class="meta">${isNum(used) ? used.toFixed(0) + '% used' : '—'}</div>
       <div class="meta">${isNum(r.rangeLeft) ? (r.rangeLeft > 0 ? r.rangeLeft.toFixed(2) + ' left' : 'past ATR') : ''}</div>
-      <div class="meta">RVol ${isNum(r.relVol) ? Math.round(r.relVol * 100) + '%' : '—'} / ${isNum(r.relVol30) ? Math.round(r.relVol30 * 100) + '%' : '—'}</div>`;
+      <div class="meta">RVol ${isNum(r.relVol) ? Math.round(r.relVol * 100) + '%' : '—'} / ${isNum(r.relVol30) ? Math.round(r.relVol30 * 100) + '%' : '—'}</div>
+      ${isNum(r.rvolPaced) ? `<div class="meta">Paced <b class="${r.rvolPaced >= (r.rvolNeed ?? 2) ? 'up' : 'muted'}">${r.rvolPaced.toFixed(1)}×</b> (Buy now needs ${fix(r.rvolNeed ?? 2, 1)}×)</div>` : ''}`;
 
     const dir = (r.state || '').split(' ')[0];
     const g = r.gex;
@@ -275,7 +276,7 @@
         ${withActions ? `<button class="ghost small datatoggle" data-chain="${esc(r.symbol)}" aria-expanded="${openChain.has(r.symbol)}">${openChain.has(r.symbol) ? 'Hide chain' : 'Chain'}</button>
         <button class="ghost small datatoggle" data-book="${esc(r.symbol)}" aria-expanded="${openBook.has(r.symbol)}">${openBook.has(r.symbol) ? 'Hide playbook' : 'Playbook'}</button>` : ''}
         ${dataBlock}</td>
-      <td><a class="zoya ${esc(r.zoya)}" href="https://zoya.finance/stocks/${encodeURIComponent(String(r.symbol).toLowerCase())}" target="_blank" rel="noopener" title="Open on Zoya">${esc(zoyaLabel[r.zoya] || r.zoya)}</a><div class="meta">${r.zoyaCheckedAt ? 'Last scanned ' + esc(etStamp(r.zoyaCheckedAt)) : ''}</div></td>
+      <td><a class="zoya ${esc(r.zoya)}" href="https://zoya.finance/stocks/${encodeURIComponent(String(r.symbol).toLowerCase())}" target="_blank" rel="noopener" title="Open on Zoya">${esc(zoyaLabel[r.zoya] || r.zoya)}</a>${r.zoyaStale ? `<div class="meta">was ${esc(zoyaLabel[r.zoyaLastStatus] || r.zoyaLastStatus)}; not re-checked in over 7 days</div>` : ''}<div class="meta">${r.zoyaCheckedAt ? 'Last scanned ' + esc(etStamp(r.zoyaCheckedAt)) : ''}</div></td>
       <td class="num"><b data-f="price">${money(r.price)}</b></td>
       <td class="num">${meter}</td>
       <td><span class="state ${esc(dir)}">${esc(r.state || '—')}</span></td>
@@ -1286,7 +1287,8 @@
       <h3>5. Readings on each row</h3>
       <ul>
         <li><b>Long / Flat</b>: Long when the daily +DI is above −DI, Flat otherwise. The app is long only: there is no short side anywhere, and the Quantum Shift backtest takes longs only.</li>
-        <li><b>Range meter</b>: today's high-low range against the 14-day ATR, how much of it is used and what is left. RVol is today's volume against the 10-day and 30-day average.</li>
+        <li><b>Range meter</b>: today's high-low range against the 14-day ATR, how much of it is used and what is left. RVol is today's volume against the 10-day and 30-day average. <b>Paced</b> RVOL compares today's volume with the usual volume by this time of day; <b>Buy now needs paced RVOL of 2× (1.5× from 9:30 to 10:30 ET)</b>. Quality no longer marks down heavy volume: RVOL from 0.5× to 10× earns full points.</li>
+        <li><b>Zoya stale</b>: names are re-checked every 24 hours. If the last successful check is more than 7 days old (Zoya kept failing), the status shows <b>Stale</b> with what it was, and the name is kept off Core, the plan bot and PV until a check succeeds.</li>
         <li><b>Current state</b>: initiation is a move of 0.6 ATR or more on 1.3× volume; accumulation (up) or distribution (down) is a move of 0.45 ATR or more, or volume of 1× with a close in the third of the range that agrees; anything smaller is manipulation.</li>
         <li><b>To breakout</b>: the distance to the higher of today's premarket high and the prior day's high.</li>
         <li><b>Bias</b>: close against a rising or falling 20 EMA on completed 15-minute, 1-hour and 4-hour candles. More up than down is Bullish, more down is Bearish, otherwise Mixed.</li>

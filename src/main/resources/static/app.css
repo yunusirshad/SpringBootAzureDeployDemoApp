@@ -92,7 +92,7 @@ a.tkr:hover { color: var(--accent); text-decoration-color: var(--accent); }
 .zoya { display: block; font-size: 12px; font-weight: 600; white-space: nowrap; text-decoration: none; }
 a.zoya:hover { text-decoration: underline; }
 .zoya.COMPLIANT { color: var(--bull); } .zoya.NON_COMPLIANT { color: var(--bear); }
-.zoya.QUESTIONABLE { color: var(--warn); } .zoya.NOT_CHECKED, .zoya.NOT_COVERED { color: var(--faint); }
+.zoya.QUESTIONABLE, .zoya.STALE { color: var(--warn); } .zoya.NOT_CHECKED, .zoya.NOT_COVERED { color: var(--faint); }
 .meter { width: 120px; height: 6px; background: var(--meter); border-radius: 3px; overflow: hidden; margin: 4px 0; }
 .meter i { display: block; height: 100%; background: var(--accent); }
 .meter i.over { background: var(--bear); }
