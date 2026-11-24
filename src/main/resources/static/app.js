@@ -1041,16 +1041,37 @@
     loadSessions();
   }
 
+  let sesReq = 0, magnetReq = 0;
   async function loadSessions() {
     const sym = $('#sesInput').value.trim().toUpperCase();
     if (!sym) return;
     store.set('sesSym', sym);
     $('#sesOut').innerHTML = '<p class="muted">Reading sessions…</p>';
+    const req = ++sesReq;   // a slower, older request must not overwrite a newer one
     try {
-      ses = await api(`api/sessions/${encodeURIComponent(sym)}?tf=${sesTf}&days=${$('#sesDays').value}`);
+      const data = await api(`api/sessions/${encodeURIComponent(sym)}?tf=${sesTf}&days=${$('#sesDays').value}`);
+      if (req !== sesReq) return;
+      ses = data;
       drawSessions();
       renderSessionTable();
-    } catch (err) { $('#sesOut').innerHTML = `<p class="msg err">${esc(err.message)}</p>`; }
+      loadMagnetLine(sym);
+    } catch (err) { if (req === sesReq) $('#sesOut').innerHTML = `<p class="msg err">${esc(err.message)}</p>`; }
+  }
+
+  /** The magnet zones' own record on this symbol: how often price touched the strongest one, and its pull. */
+  async function loadMagnetLine(sym) {
+    const el = $('#magnetLine');
+    el.textContent = 'Testing the magnet zones on ' + sym + '…';
+    const req = ++magnetReq;
+    try {
+      const m = await api(`api/magnet/${encodeURIComponent(sym)}?days=20`);
+      if (req !== magnetReq) return;
+      const z = (m.zones || [])[0], c = m.zoneStats || {};
+      el.innerHTML = (z ? `Strongest magnet zone <b>${fix(z.coreLow)}–${fix(z.coreHigh)}</b> (×${z.score}; band ${fix(z.low)}–${fix(z.high)}: ${esc(z.members.join(', '))}). ` : 'No zone where two timeframes agree. ')
+        + `Last ${c.days} days: price touched the strongest zone on <b>${c.touchPct ?? '—'}%</b> of days; `
+        + `opening more than 1 ATR away it reached it ${c.reachedPct ?? '—'}% of the time vs ${c.mirrorPct ?? '—'}% for a mirror band the same distance away. `
+        + `<i>${esc(c.verdict || '')}</i>. Treat the zones as levels where price trades and reacts, not a target it is pulled to.`;
+    } catch (err) { el.textContent = 'Magnet test unavailable: ' + err.message; }
   }
 
   function renderSessionTable() {
@@ -1105,6 +1126,27 @@
       ctx.beginPath(); ctx.moveTo(left, y); ctx.lineTo(w - right, y); ctx.stroke();
       ctx.fillText(v.toFixed(dec), w - right + 6, y + 4);
     }
+
+    // magnet zones: where several timeframes' volume profiles agree (darker = more timeframes)
+    (ses.magnetZones || []).filter((z) => z.high >= lo && z.low <= hi).forEach((z) => {
+      const y0 = py(Math.min(z.high, hi)), y1 = py(Math.max(z.low, lo));
+      ctx.fillStyle = col('--magnet');
+      ctx.globalAlpha = 0.10;
+      ctx.fillRect(left, y0, w - right - left, Math.max(2, y1 - y0));
+      // the core, where the most timeframes agree, darker the more they are
+      const c0 = py(Math.min(z.coreHigh, hi)), c1 = py(Math.max(z.coreLow, lo));
+      ctx.globalAlpha = Math.min(0.5, 0.12 + 0.09 * z.score);
+      ctx.fillRect(left, c0, w - right - left, Math.max(2, c1 - c0));
+      ctx.globalAlpha = 1;
+      // dashed edges on the core, so it reads apart from the (also purple) manipulation boxes
+      ctx.strokeStyle = col('--magnet'); ctx.lineWidth = 1.5; ctx.setLineDash([6, 4]);
+      [c0, c1].forEach((y) => { ctx.beginPath(); ctx.moveTo(left, y); ctx.lineTo(w - right, y); ctx.stroke(); });
+      ctx.setLineDash([]); ctx.lineWidth = 1;
+      ctx.fillStyle = col('--magnet');
+      ctx.font = 'bold 11px -apple-system, Segoe UI, sans-serif';
+      ctx.fillText(`Magnet ×${z.score} · ${z.members.join(', ')}`, left + 4, Math.max(top + 10, y0 - 3));
+      ctx.font = '11px -apple-system, Segoe UI, sans-serif';
+    });
 
     // session boxes underneath the candles
     const phaseColor = { Accumulation: col('--acc'), Manipulation: col('--man'), Absorption: col('--abs'), Distribution: col('--dist') };
@@ -1235,6 +1277,7 @@
         <li><b>Option chains</b> come from Cboe's free delayed quotes (cdn.cboe.com, every expiry in one file, no login), with Yahoo as the fallback; set SCREENER_OPTIONS_SOURCE=yahoo to use Yahoo only. A name whose chain could not be read is tried again on the next screen; when chains are missing, the note above the lists says why and <code>GET /api/chains/status</code> has the details.</li>
         <li><b>Chain</b> (button on each Core row): the stock's option chain under its row. Put open interest to the left, call open interest to the right, by strike, for the 30 strikes nearest the price, with the call wall, put wall, King and the price marked, and IV and net gamma per strike. Pick all expiries in the 45-day window or one expiry. Read when you open it and kept for 15 minutes.</li>
         <li><b>GEX levels</b>: every listed stock's option chain is read once a day (8:00 AM ET on weekdays, and on the first screen for a name that is new that day). Open interest is summed by strike across the expiries in the next 45 days. Call wall: the strike with the most call open interest. Put wall: the strike with the most put open interest. King: the strike with the largest net gamma exposure. Each shows its open interest and its share of all open interest in the window. Expiry is the date holding the most open interest; "as of" flags a chain that could not be refreshed today.</li>
+        <li><b>Magnet zones</b> (purple bands on the Sessions chart): a volume profile spreads each candle's volume across its price range; the price bin with the most volume is the point of control, and the band around it holding 20% of the volume is that profile's magnet zone (70% is the value area). Five profiles are built: yesterday, the last 5 and 20 days (5-minute candles, regular hours for stocks) and 3 months and 1 year (daily candles). Where two or more overlap is a magnet zone, darker the more timeframes agree. The line under the chart tests the strongest zone walk-forward on that symbol over 60 days: how often price touched it, and on days that opened more than 1 ATR away, how often it reached the zone against a mirror band the same distance on the other side. In testing the zones are touched often but rarely pull price from far away: use them as levels, not targets. <code>GET /api/magnet/{symbol}</code>.</li>
         <li><b>Session phases</b> (Sessions tab): Asia 6 PM–2 AM, London 2–8 AM, New York 8 AM–5 PM ET, each scored 0–100% for accumulation (tight, quiet balance), manipulation (sweeps the prior session's high or low and closes back inside), absorption (heavy effort, no progress) and distribution (a one-way expansion). Scored on 5-minute candles only, so every timeframe shows the same boxes. Bull/Bear comes from the close location, the swept side or the body direction.</li>
         <li><b>Market line</b>: SPY, QQQ and IWM against today's VWAP, and advancers/decliners on Nasdaq and NYSE.</li>
       </ul>

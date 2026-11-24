@@ -67,7 +67,51 @@ public class SessionService {
         out.put("baseTimeframe", "5m");
         out.put("candles", cs);
         out.put("sessions", shown);
+        // the magnet zone from the same month of 5-minute candles (regular hours only for stocks and ETFs)
+        List<Bar> profileBars = stock ? base.bars().stream().filter(SessionService::regularHours).toList() : base.bars();
+        out.put("magnet", com.personalscreener.analysis.MagnetZones.build(profileBars));
+        try {
+            var profiles = com.personalscreener.analysis.MagnetZones.profiles(profileBars, yahoo.bars(symbol, "1d", "2y"),
+                    java.time.LocalDate.now(com.personalscreener.market.MarketClock.ET).plusDays(1));
+            out.put("magnetZones", com.personalscreener.analysis.MagnetZones.confluence(profiles));
+        } catch (Exception e) {
+            out.put("magnetZones", List.of());
+        }
         out.put("generatedAt", java.time.OffsetDateTime.now().toString());
+        return out;
+    }
+
+    /** 9:30 AM to 4:00 PM ET. */
+    static boolean regularHours(Bar b) {
+        var t = java.time.Instant.ofEpochSecond(b.time()).atZone(com.personalscreener.market.MarketClock.ET).toLocalTime();
+        return !t.isBefore(java.time.LocalTime.of(9, 30)) && t.isBefore(java.time.LocalTime.of(16, 0));
+    }
+
+    /**
+     * The magnet zone over the last {@code days} trading days plus its walk-forward touch test over 60 days of
+     * 5-minute candles.
+     */
+    public Map<String, Object> magnet(String symbol, int days) throws Exception {
+        YahooClient.Chart c = yahoo.chart(symbol, "5m", "60d", false);
+        String type = c.meta().path("instrumentType").asText("");
+        boolean stock = type.equals("EQUITY") || type.equals("ETF");
+        List<Bar> bars = stock ? c.bars().stream().filter(SessionService::regularHours).toList() : c.bars();
+        TreeSet<java.time.LocalDate> dates = new TreeSet<>();
+        bars.forEach(b -> dates.add(com.personalscreener.analysis.PvConfirm.date(b)));
+        java.time.LocalDate from = dates.descendingSet().stream().limit(days).min(Comparator.naturalOrder()).orElse(java.time.LocalDate.MIN);
+        List<Bar> recent = bars.stream().filter(b -> !com.personalscreener.analysis.PvConfirm.date(b).isBefore(from)).toList();
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("symbol", symbol);
+        out.put("profile", com.personalscreener.analysis.MagnetZones.build(recent));
+        out.put("stats", com.personalscreener.analysis.MagnetZones.touchStats(bars, days));
+        out.put("price", bars.isEmpty() ? null : bars.get(bars.size() - 1).close());
+        // all timeframes combined: the zones where several profiles agree, and their own pull test
+        List<Bar> daily = yahoo.bars(symbol, "1d", "2y");
+        java.time.LocalDate tomorrow = java.time.LocalDate.now(com.personalscreener.market.MarketClock.ET).plusDays(1);
+        var profiles = com.personalscreener.analysis.MagnetZones.profiles(bars, daily, tomorrow);
+        out.put("profiles", profiles);
+        out.put("zones", com.personalscreener.analysis.MagnetZones.confluence(profiles));
+        out.put("zoneStats", com.personalscreener.analysis.MagnetZones.confluenceStats(bars, daily, 20));
         return out;
     }
 

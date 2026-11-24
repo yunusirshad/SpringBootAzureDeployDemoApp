@@ -329,6 +329,13 @@ public class ApiController {
     @GetMapping("/pv/alerts")
     public List<PvService.PvAlert> pvAlerts() { return pv.alerts(); }
 
+    /** The magnet zone (volume profile POC band) for a symbol, and how often price really touched it. */
+    @GetMapping("/magnet/{ticker}")
+    public Map<String, Object> magnet(@PathVariable String ticker, @RequestParam(defaultValue = "20") int days) throws Exception {
+        if (days < 5 || days > 40) throw new IllegalArgumentException("days must be 5 to 40");
+        return sessions.magnet(symbol(ticker), days);
+    }
+
     @GetMapping("/config")
     public Map<String, Object> config() {
         Map<String, Object> m = new LinkedHashMap<>();
