@@ -6,16 +6,18 @@
 // Each candle's volume is spread evenly across the price bins its high-low range covers (no volume counts as 1).
 // The bin with the most volume is that profile's point of control (POC); growing out from it, always toward the
 // heavier neighbour, until the band holds 20% of the volume gives the profile's zone.
-// Where two or more profiles' zones overlap is a PURPLE ZONE. Its core, where the most agree, is darker with
-// dashed edges; the label says how many agree (x2 to x5) and which.
+// Where two or more profiles' zones overlap is a candidate zone. Only ONE purple zone is drawn: the one where the most
+// timeframes agree (ties: the one nearest the price), and only if at least "Minimum timeframes" (3 by default) agree.
+// Its core, where they agree, is darker with dashed edges; the label says how many agree (x2 to x5) and which.
 // Purple zones are levels where price tends to trade and react (support / resistance), not targets price must reach.
-indicator("Purple Zones (multi-timeframe magnet)", shorttitle = "Purple Zones", overlay = true, max_boxes_count = 60, max_labels_count = 30, max_bars_back = 2000)
+indicator("Purple Zones (multi-timeframe magnet)", shorttitle = "Purple Zone", overlay = true, max_boxes_count = 10, max_labels_count = 5, max_bars_back = 2000)
 
 share      = input.float(20, "Zone = % of a profile's volume around its POC", minval = 5, maxval = 60, step = 5) / 100
 nBins      = input.int(120, "Price bins per profile", minval = 40, maxval = 300)
 useIntra   = input.bool(true, "Use 5-minute profiles (yesterday, 5 days, 20 days)")
-showAll    = input.bool(false, "Also draw each profile's own zone (thin outline)")
+minScore   = input.int(3, "Minimum timeframes that must agree (strength)", minval = 2, maxval = 5)
 showTable  = input.bool(true, "Show the table")
+tablePos   = input.string("Top right", "Table position", options = ["Top right", "Bottom right", "Top left", "Bottom left"])
 drawBack   = input.int(150, "Draw zones back this many bars", minval = 20, maxval = 1000)
 zoneColor  = input.color(color.new(#6d28d9, 0), "Purple")
 
@@ -106,7 +108,8 @@ intradayProfiles() =>
 // ---- confluence on the last bar ---------------------------------------------------------------------------------
 var array<box> drawn = array.new<box>()
 var array<label> tags = array.new<label>()
-var table tbl = table.new(position.top_right, 4, 12, bgcolor = color.new(color.black, 85), border_width = 1)
+pos = tablePos == "Bottom right" ? position.bottom_right : tablePos == "Top left" ? position.top_left : tablePos == "Bottom left" ? position.bottom_left : position.top_right
+var table tbl = table.new(pos, 2, 6, bgcolor = color.new(color.black, 85), border_width = 1)
 
 float sLo = na
 float sHi = na
@@ -125,17 +128,16 @@ if barstate.islast
     names = array.new<string>()
     los = array.new<float>()
     his = array.new<float>()
-    pocs = array.new<float>()
     if useIntra and not na(iLy)
-        names.push("yesterday"), los.push(iLy), his.push(iHy), pocs.push(iPy)
+        names.push("yesterday"), los.push(iLy), his.push(iHy)
     if useIntra and not na(iL5)
-        names.push("5 days"), los.push(iL5), his.push(iH5), pocs.push(iP5)
+        names.push("5 days"), los.push(iL5), his.push(iH5)
     if useIntra and not na(iL20)
-        names.push("20 days"), los.push(iL20), his.push(iH20), pocs.push(iP20)
+        names.push("20 days"), los.push(iL20), his.push(iH20)
     if not na(dL63)
-        names.push("3 months"), los.push(dL63), his.push(dH63), pocs.push(dP63)
+        names.push("3 months"), los.push(dL63), his.push(dH63)
     if not na(dL252)
-        names.push("1 year"), los.push(dL252), his.push(dH252), pocs.push(dP252)
+        names.push("1 year"), los.push(dL252), his.push(dH252)
 
     int m = names.size()
     edges = array.new<float>()
@@ -182,44 +184,51 @@ if barstate.islast
         if not na(cLo)
             zLo.push(cLo), zHi.push(cHi), zCLo.push(ccLo), zCHi.push(ccHi), zScore.push(cScore), zWho.push(cWho)
 
-    int left = bar_index - drawBack
-    int right = bar_index + 15
+    // ONE purple zone: the most timeframes agreeing; ties go to the zone nearest the price
     int best = -1
+    float bestDist = na
     for z = 0 to zLo.size() - 1
         if zLo.size() == 0
             break
-        int sc = zScore.get(z)
-        // the band, light
-        drawn.push(box.new(left, zHi.get(z), right, zLo.get(z), border_color = color.new(zoneColor, 100), bgcolor = color.new(zoneColor, 90), extend = extend.right))
-        // the core, darker with dashed edges (more timeframes = darker)
-        drawn.push(box.new(left, zCHi.get(z), right, zCLo.get(z), border_color = color.new(zoneColor, 20), border_style = line.style_dashed, bgcolor = color.new(zoneColor, math.max(50, 88 - 9 * sc)), extend = extend.right))
-        tags.push(label.new(right, zCHi.get(z), "Magnet ×" + str.tostring(sc) + " · " + zWho.get(z), style = label.style_label_lower_left, color = color.new(zoneColor, 100), textcolor = zoneColor, size = size.small))
-        if best < 0 or sc > zScore.get(best) or (sc == zScore.get(best) and zHi.get(z) - zLo.get(z) < zHi.get(best) - zLo.get(best))
+        float d = close > zHi.get(z) ? close - zHi.get(z) : close < zLo.get(z) ? zLo.get(z) - close : 0.0
+        if zScore.get(z) < minScore
+            continue
+        if best < 0 or zScore.get(z) > zScore.get(best) or (zScore.get(z) == zScore.get(best) and d < bestDist)
             best := z
+            bestDist := d
+    int left = bar_index - drawBack
+    int right = bar_index + 15
     if best >= 0
         sLo := zLo.get(best), sHi := zHi.get(best), sCoreLo := zCLo.get(best), sCoreHi := zCHi.get(best), sScore := zScore.get(best)
-
-    if showAll
-        for j = 0 to m - 1
-            drawn.push(box.new(left, his.get(j), right, los.get(j), border_color = color.new(zoneColor, 60), bgcolor = color.new(zoneColor, 100), extend = extend.right))
+        // the band, light
+        drawn.push(box.new(left, sHi, right, sLo, border_color = color.new(zoneColor, 100), bgcolor = color.new(zoneColor, 88), extend = extend.right))
+        // the core, darker with dashed edges (more timeframes = darker)
+        drawn.push(box.new(left, sCoreHi, right, sCoreLo, border_color = color.new(zoneColor, 20), border_style = line.style_dashed, bgcolor = color.new(zoneColor, math.max(50, 88 - 9 * sScore)), extend = extend.right))
+        tags.push(label.new(right, sHi, "Purple zone ×" + str.tostring(sScore) + " · " + zWho.get(best), style = label.style_label_lower_left, color = color.new(zoneColor, 100), textcolor = zoneColor, size = size.small))
 
     if showTable
-        tbl.clear(0, 0, 3, 11)
-        tbl.cell(0, 0, "Profile", text_color = color.white, text_size = size.small)
-        tbl.cell(1, 0, "POC", text_color = color.white, text_size = size.small)
-        tbl.cell(2, 0, "Zone", text_color = color.white, text_size = size.small)
-        for j = 0 to m - 1
-            tbl.cell(0, j + 1, names.get(j), text_color = color.white, text_size = size.small)
-            tbl.cell(1, j + 1, str.tostring(pocs.get(j), format.mintick), text_color = color.white, text_size = size.small)
-            tbl.cell(2, j + 1, str.tostring(los.get(j), format.mintick) + " – " + str.tostring(his.get(j), format.mintick), text_color = color.white, text_size = size.small)
-        int r = m + 1
-        string strongest = best >= 0 ? "×" + str.tostring(sScore) + " core " + str.tostring(sCoreLo, format.mintick) + " – " + str.tostring(sCoreHi, format.mintick) : "No purple zone (no two profiles agree)"
-        tbl.cell(0, r, "Purple", text_color = zoneColor, text_size = size.small, bgcolor = color.new(color.white, 85))
-        tbl.cell(1, r, strongest, text_color = zoneColor, text_size = size.small, bgcolor = color.new(color.white, 85))
-        tbl.merge_cells(1, r, 2, r)
+        tbl.clear(0, 0, 1, 5)
+        color txt = color.white
+        if best >= 0
+            string where = close > sHi ? str.tostring((close / sHi - 1) * 100, "#.#") + "% above the zone (support below)"
+                         : close < sLo ? str.tostring((1 - close / sLo) * 100, "#.#") + "% below the zone (resistance above)"
+                         : "Inside the zone"
+            tbl.cell(0, 0, "Purple zone", text_color = zoneColor, text_size = size.small, bgcolor = color.new(color.white, 85))
+            tbl.cell(1, 0, "×" + str.tostring(sScore) + " timeframes agree", text_color = zoneColor, text_size = size.small, bgcolor = color.new(color.white, 85))
+            tbl.cell(0, 1, "Core", text_color = txt, text_size = size.small)
+            tbl.cell(1, 1, str.tostring(sCoreLo, format.mintick) + " – " + str.tostring(sCoreHi, format.mintick), text_color = txt, text_size = size.small)
+            tbl.cell(0, 2, "Band", text_color = txt, text_size = size.small)
+            tbl.cell(1, 2, str.tostring(sLo, format.mintick) + " – " + str.tostring(sHi, format.mintick), text_color = txt, text_size = size.small)
+            tbl.cell(0, 3, "Timeframes", text_color = txt, text_size = size.small)
+            tbl.cell(1, 3, zWho.get(best), text_color = txt, text_size = size.small)
+            tbl.cell(0, 4, "Price", text_color = txt, text_size = size.small)
+            tbl.cell(1, 4, where, text_color = txt, text_size = size.small)
+        else
+            tbl.cell(0, 0, "Purple zone", text_color = zoneColor, text_size = size.small)
+            tbl.cell(1, 0, "None: fewer than " + str.tostring(minScore) + " timeframes agree anywhere", text_color = txt, text_size = size.small)
 
-// hidden outputs (data window / alerts): the strongest purple zone
-plot(sCoreLo, "Strongest core low", color = zoneColor, display = display.data_window)
-plot(sCoreHi, "Strongest core high", color = zoneColor, display = display.data_window)
-plot(sScore, "Strongest score", display = display.data_window)
-alertcondition(not na(sCoreLo) and low <= sCoreHi and high >= sCoreLo, "Price at the purple zone", "{{ticker}} is trading at its strongest purple zone")
+// hidden outputs (data window / alerts): the purple zone
+plot(sCoreLo, "Purple zone core low", color = zoneColor, display = display.data_window)
+plot(sCoreHi, "Purple zone core high", color = zoneColor, display = display.data_window)
+plot(sScore, "Purple zone score", display = display.data_window)
+alertcondition(not na(sCoreLo) and low <= sCoreHi and high >= sCoreLo, "Price at the purple zone", "{{ticker}} is trading at its purple zone")
