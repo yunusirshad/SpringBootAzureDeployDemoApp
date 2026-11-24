@@ -32,11 +32,13 @@ public class ApiController {
     private final PvService pv;
     private final BiasService bias;
     private final SignalAlertService signalAlerts;
+    private final PlanService plan;
 
     public ApiController(ScreenService screen, WatchlistService watchlist, AlertService alerts, AnalyzeService analyze,
                          TechnicalsService technicals, BacktestService backtest, SessionService sessions, MarketClock clock,
                          ScreenerProperties props, ZoyaService zoya, PvService pv, BiasService bias,
-                         SignalAlertService signalAlerts) {
+                         SignalAlertService signalAlerts, PlanService plan) {
+        this.plan = plan;
         this.signalAlerts = signalAlerts;
         this.bias = bias;
         this.zoya = zoya;
@@ -97,6 +99,7 @@ public class ApiController {
         m.put("alerts", screen.recentAlerts());
         m.put("pvAlerts", pv.recentAlerts());
         m.put("signalAlerts", signalAlerts.recent());
+        m.put("planAlerts", plan.recent());
         var todayBias = bias.today(clock.now().toLocalDate());
         if (todayBias != null) {
             var last = todayBias.intraday.isEmpty() ? null : todayBias.intraday.get(todayBias.intraday.size() - 1);
@@ -228,6 +231,26 @@ public class ApiController {
     public Map<String, Object> chainRefresh() {
         screen.refreshChainsNow();
         return Map.of("started", true);
+    }
+
+    // ---- trading plan bot ----------------------------------------------------------------------
+
+    /** The plan bot: open plan trades, today's BUY NOW / SELL NOW, the watch list, the backtest and the settings. */
+    @GetMapping("/plan")
+    public Map<String, Object> plan() { return plan.view(); }
+
+    @PostMapping("/plan/scan")
+    public Map<String, Object> planScan() { return Map.of("started", plan.scanAsync()); }
+
+    @PostMapping("/plan/backtest")
+    public Map<String, Object> planBacktest() { return Map.of("started", plan.backtestAsync()); }
+
+    @GetMapping("/plan/alerts")
+    public List<PlanService.PlanAlert> planAlerts() { return plan.allAlerts(); }
+
+    @PutMapping("/plan/settings")
+    public com.personalscreener.analysis.TradePlan.Settings planSettings(@RequestBody com.personalscreener.analysis.TradePlan.Settings s) {
+        return plan.saveSettings(s);
     }
 
     // ---- market bias ---------------------------------------------------------------------------

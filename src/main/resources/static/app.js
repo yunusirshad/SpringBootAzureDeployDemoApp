@@ -429,6 +429,7 @@
       handlePvAlerts(p.pvAlerts || []);
       handleBias(p.bias);
       handleSignalAlerts(p.signalAlerts || []);
+      handlePlanAlerts(p.planAlerts || []);
     } catch { /* keep the last view */ }
   }
 
@@ -449,6 +450,96 @@
   }
 
 
+
+
+  // ---------- trading plan bot ----------
+  let plan = null;
+  async function loadPlan() { try { plan = await api('api/plan'); renderPlan(); } catch { /* keep the last view */ } }
+  const pctOf = (a, b) => isNum(a) && isNum(b) && b > 0 ? signed((a / b - 1) * 100, 1) : '';
+
+  function renderPlan() {
+    const d = plan;
+    if (!d) return;
+    const bt = d.backtest, st = (bt && bt.stats) || {}, set = d.settings || {};
+    $('#planStamp').textContent = `${d.scanning ? 'Scanning… · ' : ''}${d.testing ? 'Backtesting… · ' : ''}${d.lastScan ? `${d.scanned} stocks scanned ${etStamp(d.lastScan)}` : 'First scan pending'} · every 15 min, 9:45 AM–3:45 PM ET`;
+    if (!document.querySelector('#planCard .pvsettings').open) {
+      const f = $('#planSettingsForm');
+      Object.entries(set).forEach(([k, v]) => { if (f.elements[k]) f.elements[k].value = v; });
+    }
+    const passing = Object.entries(d.gate || {}).filter(([k, ok]) => ok && !k.startsWith('ALL')).map(([k]) => k);
+    const gateText = !bt ? 'The backtest has not run yet, so no BUY NOW alerts are sent.'
+      : passing.length ? `Alerts on for: ${passing.join(', ')} (won ${set.minWinRate}%+ over ${set.minTrades}+ trades).`
+      : `No setup grade has won ${set.minWinRate}%+ over ${set.minTrades}+ trades in the backtest, so the bot sends no BUY NOW alerts. It re-tests every evening.`;
+    const openRows = (d.open || []).map((o) => `<tr><td><a href="#" class="tkr" data-ses="${esc(o.symbol)}">${esc(o.symbol)}</a></td>
+      <td>${esc(o.type)} ${esc(o.grade)}</td><td class="num">${money(o.entry)}</td><td class="num">${money(o.stop)}</td>
+      <td class="num">${money(o.target)}<span class="pct">${esc(o.targetSource || '')}</span></td><td class="num">${money(o.last)}<span class="pct">${pctOf(o.last, o.entry)}</span></td>
+      <td class="num">${isNum(o.winRate) ? o.winRate.toFixed(0) + '%' : '—'}</td></tr>`).join('');
+    const todayRows = (d.today || []).map((a) => `<tr><td>${esc(etStamp(a.at))}</td><td><span class="sig ${a.action === 'BUY NOW' ? 'BUY_NOW' : 'SELL_NOW'}">${esc(a.action)}</span></td>
+      <td><a href="#" class="tkr" data-ses="${esc(a.symbol)}">${esc(a.symbol)}</a></td><td class="num">${money(a.price)}</td>
+      <td class="num">${money(a.stop)}</td><td class="num">${money(a.target)}</td><td class="meta">${esc(a.reason || '')}${isNum(a.resultPct) ? ' · ' + signed(a.resultPct) : ''}</td></tr>`).join('');
+    const watchRows = (d.watching || []).map((w) => `<li><a href="#" class="tkr" data-ses="${esc(w.symbol)}">${esc(w.symbol)}</a> ${money(w.price)} — ${esc(w.note)}</li>`).join('');
+    const statRows = Object.entries(st).map(([k, v]) => `<tr class="${(d.gate || {})[k] ? 'gateon' : ''}"><td>${esc(k)}</td><td class="num">${v.trades}</td>
+      <td class="num"><b class="${v.winRate >= (set.minWinRate ?? 60) ? 'up' : ''}">${v.winRate.toFixed(1)}%</b></td><td class="num">${fix(v.avgR)}</td>
+      <td class="num">${signed(v.avgReturnPct)}</td><td class="num">${v.profitFactor == null ? '—' : fix(v.profitFactor)}</td><td>${(d.gate || {})[k] && !k.startsWith('ALL') ? '<span class="up">alerts on</span>' : ''}</td></tr>`).join('');
+    $('#planBody').innerHTML = `
+      ${d.note ? `<p class="meta">${esc(d.note)}</p>` : ''}
+      <p class="plangate ${passing.length ? 'on' : 'off'}">${esc(gateText)}</p>
+      <h3 class="pvh">Open plan trades</h3>
+      <div class="tablewrap"><table class="grid"><thead><tr><th>Stock</th><th>Setup</th><th class="num">Entry</th><th class="num">Stop</th><th class="num">Target</th><th class="num">Now</th><th class="num">Backtest win</th></tr></thead>
+        <tbody>${openRows || '<tr class="empty"><td colspan="7">No open plan trades.</td></tr>'}</tbody></table></div>
+      <h3 class="pvh">Today's signals</h3>
+      <div class="tablewrap"><table class="grid"><thead><tr><th>When</th><th>Signal</th><th>Stock</th><th class="num">Price</th><th class="num">Stop</th><th class="num">Target</th><th>Why</th></tr></thead>
+        <tbody>${todayRows || '<tr class="empty"><td colspan="7">No BUY NOW or SELL NOW yet today.</td></tr>'}</tbody></table></div>
+      <h3 class="pvh">Setting up</h3>
+      ${watchRows ? `<ul class="planwatch">${watchRows}</ul>` : '<p class="muted small">Nothing near a setup right now.</p>'}
+      <h3 class="pvh">Backtest${bt ? ` · ${bt.stocks} stocks · ${esc(bt.from || '')} to ${esc(bt.to || '')} · run ${esc(etStamp(bt.generatedAt))}` : ''}</h3>
+      <div class="tablewrap"><table class="grid"><thead><tr><th>Setup-grade</th><th class="num">Trades</th><th class="num">Win rate</th><th class="num">Avg R</th><th class="num">Avg trade</th><th class="num">Profit factor</th><th></th></tr></thead>
+        <tbody>${statRows || '<tr class="empty"><td colspan="7">Not run yet.</td></tr>'}</tbody></table></div>
+      <p class="meta">Day trades, entered at the next 5m open, one per stock per day, 5 bps cost each side; a candle that touches both the stop and the target counts as a stop. Past results do not promise future ones.</p>`;
+  }
+
+  $('#planScan').addEventListener('click', async () => { await api('api/plan/scan', { method: 'POST' }); toast('Scanning…'); setTimeout(loadPlan, 8000); });
+  $('#planBacktest').addEventListener('click', async () => { await api('api/plan/backtest', { method: 'POST' }); toast('Backtesting the plan on every screened stock. This takes a few minutes.'); setTimeout(loadPlan, 3000); });
+  $('#planSettingsForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const f = e.target, body = {};
+    ['minWinRate', 'minTrades', 'minRR', 'maxStopPct', 'costBps'].forEach((k) => { body[k] = Number(f.elements[k].value); });
+    const msg = $('#planSettingsMsg');
+    try { await api('api/plan/settings', { method: 'PUT', body: JSON.stringify(body) }); msg.className = 'msg'; msg.textContent = 'Saved. Re-run the backtest to apply R:R and stop changes.'; loadPlan(); }
+    catch (err) { msg.className = 'msg err'; msg.textContent = err.message; }
+  });
+
+  const seenPlan = new Set(store.get('seenPlan', []));
+  function handlePlanAlerts(list) {
+    const fresh = list.filter((a) => !seenPlan.has(a.id));
+    if (!fresh.length) return;
+    fresh.forEach((a) => {
+      seenPlan.add(a.id);
+      const title = `${a.action} ${a.symbol} at ${money(a.price)}${a.grade ? ` (grade ${a.grade}${isNum(a.winRate) ? ', wins ' + a.winRate.toFixed(0) + '%' : ''})` : ''}`;
+      const body = a.action === 'BUY NOW' ? `Stop ${money(a.stop)} · target ${money(a.target)} · R:R ${fix(a.rr, 1)}` : `${a.reason}${isNum(a.resultPct) ? ' · ' + signed(a.resultPct) : ''}`;
+      toast(`${title} — ${body}`);
+      try { if ('Notification' in window && Notification.permission === 'granted') new Notification(title, { body }); } catch { /* ignore */ }
+    });
+    store.set('seenPlan', [...seenPlan].slice(-300));
+    const b = $('#alertBadge');
+    b.textContent = fresh.length;
+    b.classList.remove('hidden');
+    loadPlan();
+  }
+
+  async function loadPlanAlerts() {
+    try {
+      const list = await api('api/plan/alerts');
+      $('#planAlertTable').innerHTML = '<thead><tr><th>When</th><th>Signal</th><th>Stock</th><th class="num">Price</th><th class="num">Stop</th><th class="num">Target</th><th>Why</th></tr></thead><tbody>'
+        + (list.map((a) => `<tr><td>${esc(etStamp(a.at))}</td><td><span class="sig ${a.action === 'BUY NOW' ? 'BUY_NOW' : 'SELL_NOW'}">${esc(a.action)}</span></td>
+          <td><a href="#" class="tkr" data-ses="${esc(a.symbol)}">${esc(a.symbol)}</a></td><td class="num">${money(a.price)}</td><td class="num">${money(a.stop)}</td>
+          <td class="num">${money(a.target)}</td><td class="meta">${esc(a.reason || '')}${isNum(a.resultPct) ? ' · ' + signed(a.resultPct) : ''}</td></tr>`).join('')
+          || '<tr class="empty"><td colspan="7">No trading plan alerts yet.</td></tr>') + '</tbody>';
+    } catch { /* ignore */ }
+  }
+
+  loadPlan();
+  setInterval(loadPlan, 60_000);
 
   // ---------- BUY NOW / SELL NOW alerts ----------
   const seenSig = new Set(store.get('seenSig', []));
@@ -716,6 +807,7 @@
       + (rows || '<tr class="empty"><td colspan="5">No alerts yet.</td></tr>') + '</tbody>';
     loadPvAlerts();
     loadSignalAlerts();
+    loadPlanAlerts();
   }
 
   $('#alertForm').addEventListener('submit', async (e) => {
@@ -1053,6 +1145,7 @@
           <b>session phase</b> 20 (the latest pre-market or New York session from the Sessions indicator: Bull Distribution 20, Bull Absorption 16, Bear Absorption 12, Bull Manipulation 10, Bull Accumulation 8, times its percent);
           <b>long score</b> 30 (the long score × 0.3).
           Names are grouped by signal first (Buy now, Ready to buy, Ready to sell, Sell now, Hold, Wait), then by the setup score. A Wait shows the expected buy (the breakout level), its stop (today's low or the put wall, at least ¼ ATR under) and target (buy + 1 ATR, capped at the call wall). The <b>super stock</b> is the best Buy now name (or Ready to buy when there is no Buy now). It stays first whatever the sort.</li>
+        <li><b>Trading plan bot</b> (card on the Screen tab): a top-down, long-only day-trade plan. Daily: direction (Strong Uptrend or Early Bullish Reversal). Daily/1h: liquidity above (prior day high, 20-hour high, nearest bearish FVG or order block) is the target, and a trade is skipped when it is closer than 2R. 1h: trend (close above a rising 20 EMA). 15m/1h: a retest of an unfilled bullish FVG or order block, or a 15m breakout over the prior day high on 1.5× volume. 5m: a bullish close above its 20 EMA and the previous high confirms; entry at the next open, stop under the zone or the 5m swing low (3% at most). Exits: stop, target, the 1h trend failing while under water, or 3:45 PM. Setups are graded A/B/C by confluence and backtested on every screened stock over 60 days of 5-minute data; BUY NOW goes out only for a grade with the minimum win rate (60%) over the minimum trades (15). It scans every 15 minutes from 9:45 AM to 3:45 PM ET and alerts here and, when set up, on Telegram or ntfy. <b>FVG</b>: three candles where the first's high is below the third's low (bullish). <b>Order block</b>: the last down candle before a move that closes 1 ATR above its high (bullish). A zone is gone once a candle closes through it.</li>
         <li><b>Buy now / Sell now alerts</b>: during market hours (9:30 AM to 4:00 PM ET on trading days), when a Core stock's signal is Buy now or Sell now the app alerts once per stock, per signal, per day: a pop-up and browser notification here, and Telegram or ntfy on your phone when set up. A Buy now alert carries the stop and target from the setup; a Sell now alert says why. They are listed on the Alerts tab.</li>
         <li><b>Signals</b>. Sell signals are about leaving a long and are checked first.
           <b>Sell now</b>: an Early Bearish Reversal below the 1h 20 EMA with a bias that is not Bullish; or the price at or above the call wall; or 100% of the ATR range used into a Bear session of 60% or more.
@@ -1089,6 +1182,7 @@
         <li><code>GET /api/prices</code>: the light payload the page polls every 10 seconds.</li>
         <li><code>GET /api/chain/{ticker}?expiry=ALL</code>: one stock's option chain by strike (call and put open interest, IV, net gamma) with its walls and King; the <b>Chain</b> button on each Core row shows it.</li>
         <li><code>GET /api/chains/status</code>: why option chains are or are not loading (source, Cboe and Yahoo errors, last run's counts). <code>POST /api/chains/refresh</code> reads them all again now.</li>
+        <li><code>GET /api/plan</code>: the trading plan bot (open trades, today's signals, setting up, backtest by setup and grade, settings). <code>POST /api/plan/scan</code>, <code>POST /api/plan/backtest</code>, <code>PUT /api/plan/settings</code>, <code>GET /api/plan/alerts</code>.</li>
         <li><code>GET /api/signal-alerts</code>: the Buy now and Sell now alerts, newest first.</li>
         <li><code>GET /api/bias</code>: today's market-bias call (or a preview), the last calls with SPY's result and the accuracy; <code>?refresh=true</code> reads it again now. <code>POST /api/bias/test</code> sends a test phone alert.</li>
         <li><code>GET /api/pv</code>: PV Confirm rows (uptrend and downtrend), SPY's state and the settings. <code>POST /api/pv/refresh</code> re-runs it; <code>GET|PUT /api/pv/settings</code> reads or saves the settings; <code>GET /api/pv/alerts</code> lists the 4:15 PM alerts.</li>

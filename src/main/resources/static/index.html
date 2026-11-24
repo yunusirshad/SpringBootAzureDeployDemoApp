@@ -50,6 +50,33 @@
     <div id="biasBody"><p class="muted">Loading…</p></div>
   </div>
 
+  <div class="card" id="planCard">
+    <div class="card-head"><h2>Trading plan bot</h2>
+      <div class="pvhead"><span class="muted small" id="planStamp"></span>
+        <button id="planScan" class="ghost small" type="button">Scan now</button>
+        <button id="planBacktest" class="ghost small" type="button">Re-run backtest</button></div></div>
+    <details class="pvsettings"><summary>The plan</summary>
+      <ol class="planrules">
+        <li><b>Daily: direction.</b> Strong Uptrend or Early Bullish Reversal only. Long only.</li>
+        <li><b>Daily / 1h: liquidity.</b> Targets are the liquidity above: prior day high, the 20-hour high, the nearest bearish FVG or order block. If one is closer than 2R, skip: supply is in the way.</li>
+        <li><b>1h: trend.</b> Close above a rising 20 EMA (confluence).</li>
+        <li><b>15m / 1h: setup.</b> <i>Retest</i>: price dips into an unfilled bullish FVG or order block and holds. <i>Breakout</i>: a 15m close through the prior day high on 1.5× volume.</li>
+        <li><b>5m: confirmation and entry.</b> A bullish 5m close above its 20 EMA and the previous high. Enter at the next open; stop under the zone or the 5m swing low (3% at most); target the first liquidity at 2R or more.</li>
+        <li><b>Exit.</b> Stop, target, the 1h trend failing while under water, or 3:45 PM: it is a day trade.</li>
+        <li><b>High probability only.</b> Setups are graded A/B/C by confluence (1h trend, 1h zone, FVG + OB overlap, SPY with you, volume, R:R 3+). The plan is backtested on every screened stock over the last 60 days of 5-minute data, and a BUY NOW is sent only for a grade that has won at least the minimum win rate over at least the minimum number of trades.</li>
+      </ol>
+      <form id="planSettingsForm" class="pvform">
+        <label>Minimum win rate %<input name="minWinRate" type="number" min="0" max="100" step="1"></label>
+        <label>Minimum trades<input name="minTrades" type="number" min="1" max="500" step="1"></label>
+        <label>Minimum R:R<input name="minRR" type="number" min="1" max="10" step="0.1"></label>
+        <label>Largest stop %<input name="maxStopPct" type="number" min="0.5" max="15" step="0.1"></label>
+        <label>Cost per side (bps)<input name="costBps" type="number" min="0" max="100" step="0.5"></label>
+        <div class="pvformbtns"><button type="submit">Save</button><span id="planSettingsMsg" class="msg"></span></div>
+      </form>
+    </details>
+    <div id="planBody"><p class="muted">Loading…</p></div>
+  </div>
+
   <div class="toolbar">
     <input id="search" type="search" placeholder="Search ticker" autocomplete="off">
     <select id="signalFilter" aria-label="Signal">
@@ -160,6 +187,11 @@
     </form>
     <div id="alertMsg" class="msg"></div>
     <div class="tablewrap"><table class="grid" id="alertTable"></table></div>
+  </div>
+  <div class="card">
+    <div class="card-head"><h2>Trading plan bot alerts</h2></div>
+    <p class="sub">BUY NOW (with entry, stop and target) and SELL NOW from the trading plan bot, which scans every 15 minutes from 9:45 AM to 3:45 PM ET.</p>
+    <div class="tablewrap"><table class="grid" id="planAlertTable"></table></div>
   </div>
   <div class="card">
     <div class="card-head"><h2>Buy now / Sell now alerts</h2></div>
