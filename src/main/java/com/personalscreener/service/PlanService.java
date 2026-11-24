@@ -42,6 +42,9 @@ public class PlanService {
     public static class OpenTrade {
         public String symbol, name, type, grade, date, entryAt, targetSource;
         public double entry, stop, target, rr;
+        /** The planned risk per share (entry - first stop); the stop moves to the entry once price is up this much. */
+        public double risk;
+        public boolean breakeven;
         public Double winRate, last;
         public List<String> confluence = List.of();
     }
@@ -232,7 +235,7 @@ public class PlanService {
         }
         String why = null;
         double exit = o.last == null ? o.entry : o.last;
-        if (low <= o.stop) { why = "STOP hit"; exit = o.stop; }
+        if (low <= o.stop) { why = o.breakeven ? "Breakeven stop hit (it had reached +1R)" : "STOP hit"; exit = o.stop; }
         else if (high >= o.target) { why = "TARGET hit"; exit = o.target; }
         else if (!now.toLocalTime().isBefore(EOD_EXIT)) why = "End of day (3:45 PM): close the day trade";
         else {
@@ -242,7 +245,15 @@ public class PlanService {
                 if (c[c.length - 1] < com.personalscreener.analysis.Indicators.ema(c, 20) && exit < o.entry) why = "1h trend failed while under water";
             }
         }
-        if (why == null) return;
+        if (why == null) {
+            // management: once up 1R, the stop moves to the entry
+            if (!o.breakeven && o.risk > 0 && high >= o.entry + o.risk) {
+                o.stop = o.entry;
+                o.breakeven = true;
+                store.write(OPEN, open);
+            }
+            return;
+        }
         PlanAlert a = alert("SELL NOW", o.symbol, exit, why);
         a.entry = o.entry;
         a.stop = o.stop;
@@ -267,6 +278,7 @@ public class PlanService {
         o.entry = Double.isNaN(last) ? st.entry() : last;
         double risk = st.entry() - st.stop();
         o.stop = round(o.entry - risk);
+        o.risk = round(risk);
         o.target = round(o.entry + (st.target() - st.entry()));
         o.rr = round(st.rr());
         o.targetSource = st.targetSource();

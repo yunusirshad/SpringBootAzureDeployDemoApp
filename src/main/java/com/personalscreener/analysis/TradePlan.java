@@ -26,12 +26,24 @@ import java.util.*;
  *       breakout candle) or the last six 5m lows, whichever is lower, less 0.1 ATR(15m); never more than 3% away.</li>
  * </ol>
  *
- * <p><b>Grade</b>: one point each for the 1h trend (close above a rising 20 EMA), a zone from the 1h chart, an FVG and
- * order block overlapping, SPY's 15m close above its 20 EMA, confirmation volume at 1.2x the 5m average or more, and
- * reward to risk of 3 or better. 4+ is A, 2-3 is B, else C.
+ * <p><b>More setups</b> (checked after the FVG/OB retest, before the breakout):
+ * <ul>
+ *   <li><b>FIB</b> (golden zone): on the 1h chart, the swing low to the highest high of the last 40 hours, a leg of at
+ *       least 2 ATR(1h) (a trend, not a range). Price pulled back into the 0.5-0.618 retracement in the last three 15m
+ *       candles and no 15m candle since the high has closed below 0.786 (a close below 0.786 kills the setup). The stop
+ *       goes under 0.786.</li>
+ *   <li><b>REVERSAL</b>: in the last six 15m candles one swept the lowest low of the 20 before it (or the prior day's
+ *       low) and closed back above it, and the last 15m close is above that sweep candle's high (the structure turned).
+ *       The stop goes under the sweep's low.</li>
+ * </ul>
  *
- * <p><b>Exits</b> (day trade): the stop (filled at the stop, or the open on a gap through it), the target, or the
- * close of the 3:40 PM candle. When a candle reaches both the stop and the target, the stop is assumed (cautious).
+ * <p><b>Grade</b>: one point each for the 1h trend (close above a rising 20 EMA), a zone from the 1h chart, an FVG and
+ * order block overlapping, an entry inside the Fibonacci golden zone, SPY's 15m close above its 20 EMA, confirmation
+ * volume at 1.2x the 5m average or more, and reward to risk of 3 or better. 4+ is A, 2-3 is B, else C.
+ *
+ * <p><b>Management and exits</b> (day trade): once the trade is up 1R the stop moves to the entry (breakeven). It
+ * exits on the stop (filled at the stop, or the open on a gap through it), the target, or the close of the 3:40 PM
+ * candle. When a candle reaches both the stop and the target, the stop is assumed (cautious).
  */
 public final class TradePlan {
 
@@ -120,10 +132,17 @@ public final class TradePlan {
             for (int k = n15 - 3; k < n15; k++) if (m15.get(k).low() <= z.high()) touched = true;
             if (touched && last15.close() > z.low() && (best == null || z.high() > best.high())) best = z;
         }
+        Fib fib = fib(h1, m15, atr1h);
         if (best != null) {
             type = "RETEST";
             zone = best;
             structureLow = best.low();
+        } else if (fib != null && fib.inZone()) {
+            type = "FIB";
+            structureLow = fib.level(0.786);
+        } else if (reversalLow(m15, prevDay) != null) {
+            type = "REVERSAL";
+            structureLow = reversalLow(m15, prevDay);
         } else {
             double vAvg = 0;
             for (int k = n15 - 21; k < n15 - 1; k++) vAvg += m15.get(k).volume();
@@ -153,15 +172,21 @@ public final class TradePlan {
             Bar x = m5.get(k), p = m5.get(k - 1);
             if (date(x.time()).equals(day) && x.close() > x.open() && x.close() > e5[k] && x.close() > p.high()) { conf = k; break; }
         }
-        String zoneText = zone == null ? "prior day high " + fmt(prevDay.high()) : zone.label() + " " + fmt(zone.low()) + "-" + fmt(zone.high());
-        if (conf < 0) return new Look(null, (type.equals("RETEST") ? "Retesting " : "Breaking out: ") + zoneText + ", waiting for a 5m confirmation", "No 5m confirmation yet");
+        String zoneText = zone != null ? zone.label() + " " + fmt(zone.low()) + "-" + fmt(zone.high())
+                : type.equals("FIB") ? String.format("Fibonacci golden zone %.2f-%.2f (dead below %.2f)", fib.level(0.618), fib.level(0.5), fib.level(0.786))
+                : type.equals("REVERSAL") ? String.format("a sweep of %.2f that turned up", structureLow)
+                : "prior day high " + fmt(prevDay.high());
+        if (conf < 0) {
+            String what = switch (type) { case "RETEST" -> "Retesting "; case "FIB" -> "In the "; case "REVERSAL" -> "Reversal after "; default -> "Breaking out: "; };
+            return new Look(null, what + zoneText + ", waiting for a 5m confirmation", "No 5m confirmation yet");
+        }
         Bar cb = m5.get(conf);
 
         // 4. entry, stop, target
         double entry = cb.close();
         double swing = Double.POSITIVE_INFINITY;
         for (int k = Math.max(0, n5 - 6); k < n5; k++) swing = Math.min(swing, m5.get(k).low());
-        double stop = Math.min(structureLow, swing) - 0.1 * atr15;
+        double stop = type.equals("FIB") ? structureLow - 0.1 * atr15 : Math.min(structureLow, swing) - 0.1 * atr15;
         double risk = entry - stop;
         if (!(risk > 0)) return new Look(null, null, "No room for a stop");
         if (risk / entry * 100 > s.maxStopPct) return new Look(null, zoneText, String.format("Stop %.1f%% away (over %.1f%%)", risk / entry * 100, s.maxStopPct));
@@ -196,6 +221,10 @@ public final class TradePlan {
                 if (o.bullish() && o.kind() != zone.kind() && o.overlaps(zone)) { pts++; conf5.add("FVG and OB overlap"); break; }
             }
         }
+        if (fib != null && (type.equals("FIB") || (zone != null && zone.low() <= fib.level(0.5) && zone.high() >= fib.level(0.618)))) {
+            pts++;
+            conf5.add("Fibonacci golden zone");
+        }
         List<Bar> spy = upTo(b.spy15(), t, 900, 60);
         if (spy.size() >= 21) {
             double[] sc = Indicators.closes(spy);
@@ -210,6 +239,54 @@ public final class TradePlan {
         conf5.add(0, tc.trendClass().equals(TrendClassifier.STRONG) ? "daily Strong Uptrend" : "daily Early Bullish Reversal");
         return new Look(new Setup(type, grade, pts, conf5, cb.time(), entry, stop, target, rr, targetSource, zone, tc.trendClass()),
                 null, null);
+    }
+
+    /** A 1h swing from {@code low} up to {@code high}; {@code inZone}: the last three 15m lows reached the golden zone. */
+    record Fib(double low, double high, boolean inZone) {
+        double level(double r) { return high - r * (high - low); }
+    }
+
+    /**
+     * The 1h swing low to the highest high of the last 40 hours, when the leg is at least 2 ATR(1h), the high is at
+     * least two hours old (a pullback has started) and no 15m candle since the high has closed below 0.786.
+     */
+    static Fib fib(List<Bar> h1, List<Bar> m15, double atr1h) {
+        int n = h1.size();
+        if (n < 45 || !(atr1h > 0)) return null;
+        int hi = n - 40;
+        for (int k = n - 40; k < n; k++) if (h1.get(k).high() >= h1.get(hi).high()) hi = k;
+        if (hi > n - 3) return null;
+        int lo = Math.max(0, hi - 40);
+        for (int k = Math.max(0, hi - 40); k < hi; k++) if (h1.get(k).low() <= h1.get(lo).low()) lo = k;
+        double high = h1.get(hi).high(), low = h1.get(lo).low();
+        if (high - low < 2 * atr1h) return null;
+        Fib f = new Fib(low, high, false);
+        long since = h1.get(hi).time() + 3600;
+        for (Bar x : m15) if (x.time() >= since && x.close() < f.level(0.786)) return null;   // setup dead
+        int n15 = m15.size();
+        boolean touched = false;
+        for (int k = Math.max(0, n15 - 3); k < n15; k++) if (m15.get(k).low() <= f.level(0.5)) touched = true;
+        boolean held = n15 > 0 && m15.get(n15 - 1).close() >= f.level(0.786);
+        return new Fib(low, high, touched && held);
+    }
+
+    /**
+     * A liquidity sweep that turned up: in the last six 15m candles one went under the lowest low of the 20 before it
+     * (or under the prior day's low) and closed back above it, and the last close is above that candle's high.
+     * Returns the sweep's low (the stop goes under it), or null.
+     */
+    static Double reversalLow(List<Bar> m15, Bar prevDay) {
+        int n = m15.size();
+        if (n < 27) return null;
+        double lastClose = m15.get(n - 1).close();
+        for (int k = n - 6; k < n - 1; k++) {
+            Bar sw = m15.get(k);
+            double prior = Double.POSITIVE_INFINITY;
+            for (int j = k - 20; j < k; j++) prior = Math.min(prior, m15.get(j).low());
+            boolean swept = (sw.low() < prior && sw.close() > prior) || (sw.low() < prevDay.low() && sw.close() > prevDay.low());
+            if (swept && lastClose > sw.high()) return sw.low();
+        }
+        return null;
     }
 
     // ---- backtest -----------------------------------------------------------------------------------
@@ -237,7 +314,10 @@ public final class TradePlan {
     }
 
     /** Enters at the first 5m open at or after {@code t} and walks the day's 5m candles to the exit. */
-    static Trade simulate(String symbol, Setup st, List<Bar> m5, long t, double cost) {
+    static Trade simulate(String symbol, Setup st, List<Bar> m5, long t, double cost) { return simulate(symbol, st, m5, t, cost, true); }
+
+    /** {@code manage}: move the stop to breakeven once the trade is up 1R. */
+    static Trade simulate(String symbol, Setup st, List<Bar> m5, long t, double cost, boolean manage) {
         int i = 0;
         while (i < m5.size() && m5.get(i).time() < t) i++;
         if (i >= m5.size() || !date(m5.get(i).time()).equals(date(t))) return null;
@@ -247,13 +327,15 @@ public final class TradePlan {
         if (!(entry > stop)) return null;
         LocalDate d = date(t);
         long entryTime = m5.get(i).time();
+        boolean breakeven = false;
         for (int k = i; k < m5.size(); k++) {
             Bar x = m5.get(k);
             if (!date(x.time()).equals(d)) break;
             ZonedDateTime z = Instant.ofEpochSecond(x.time()).atZone(MarketClock.ET);
-            if (x.low() <= stop) return close(symbol, st, entryTime, entry, stop, target, x.time(), Math.min(x.open(), stop), "STOP", risk, cost);
+            if (x.low() <= stop) return close(symbol, st, entryTime, entry, stop, target, x.time(), Math.min(x.open(), stop), breakeven ? "BREAKEVEN" : "STOP", risk, cost);
             if (x.high() >= target) return close(symbol, st, entryTime, entry, stop, target, x.time(), Math.max(x.open(), target), "TARGET", risk, cost);
             if (!z.toLocalTime().isBefore(EOD_BAR)) return close(symbol, st, entryTime, entry, stop, target, x.time(), x.close(), "END OF DAY", risk, cost);
+            if (manage && !breakeven && x.high() >= entry + risk) { stop = entry; breakeven = true; }   // from the next candle
         }
         Bar last = m5.get(m5.size() - 1);
         return date(last.time()).equals(d) ? close(symbol, st, entryTime, entry, stop, target, last.time(), last.close(), "END OF DAY", risk, cost) : null;
