@@ -69,7 +69,9 @@ profile(int off, int n) =>
 dailyProfiles() =>
     float p2 = na, float l2 = na, float h2 = na
     float p3 = na, float l3 = na, float h3 = na
-    if barstate.islast
+    // On an intraday chart the daily request never reports its last bar as "last", so the profiles are built on the
+    // daily bars of the last 7 days as well (a few bars only, so it stays fast)
+    if barstate.islast or timenow - time < 7 * 86400000
         int off = time_close < timenow ? 0 : 1
         [d, e, f] = profile(off, 63)
         [g, h, k] = profile(off, 252)
