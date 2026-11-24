@@ -1,0 +1,225 @@
+//@version=6
+// Purple Zones: multi-timeframe magnet zones (volume-profile confluence)
+//
+// Five volume profiles, built only from completed data:
+//   yesterday, the last 5 days and the last 20 days (5-minute candles), 3 months and 1 year (daily candles).
+// Each candle's volume is spread evenly across the price bins its high-low range covers (no volume counts as 1).
+// The bin with the most volume is that profile's point of control (POC); growing out from it, always toward the
+// heavier neighbour, until the band holds 20% of the volume gives the profile's zone.
+// Where two or more profiles' zones overlap is a PURPLE ZONE. Its core, where the most agree, is darker with
+// dashed edges; the label says how many agree (x2 to x5) and which.
+// Purple zones are levels where price tends to trade and react (support / resistance), not targets price must reach.
+indicator("Purple Zones (multi-timeframe magnet)", shorttitle = "Purple Zones", overlay = true, max_boxes_count = 60, max_labels_count = 30, max_bars_back = 2000)
+
+share      = input.float(20, "Zone = % of a profile's volume around its POC", minval = 5, maxval = 60, step = 5) / 100
+nBins      = input.int(120, "Price bins per profile", minval = 40, maxval = 300)
+useIntra   = input.bool(true, "Use 5-minute profiles (yesterday, 5 days, 20 days)")
+showAll    = input.bool(false, "Also draw each profile's own zone (thin outline)")
+showTable  = input.bool(true, "Show the table")
+drawBack   = input.int(150, "Draw zones back this many bars", minval = 20, maxval = 1000)
+zoneColor  = input.color(color.new(#6d28d9, 0), "Purple")
+
+// ---- the profile of `n` bars starting `off` bars back, in the current (requested) timeframe --------------------
+profile(int off, int n) =>
+    float poc = na
+    float zlo = na
+    float zhi = na
+    if n >= 3 and not na(low[off + n - 1])
+        float lo = low[off]
+        float hi = high[off]
+        for i = off to off + n - 1
+            lo := math.min(lo, low[i])
+            hi := math.max(hi, high[i])
+        if hi > lo
+            float step = (hi - lo) / nBins
+            vols = array.new<float>(nBins, 0.0)
+            float total = 0.0
+            for i = off to off + n - 1
+                float v = nz(volume[i]) > 0 ? volume[i] : 1.0
+                int a = math.max(0, math.min(nBins - 1, int(math.floor((low[i] - lo) / step))))
+                int z = math.max(a, math.min(nBins - 1, int(math.floor((high[i] - lo) / step))))
+                float each = v / (z - a + 1)
+                for k = a to z
+                    vols.set(k, vols.get(k) + each)
+                total += v
+            int p = vols.indexof(vols.max())
+            int a2 = p
+            int z2 = p
+            float sum = vols.get(p)
+            while sum < total * share and (a2 > 0 or z2 < nBins - 1)
+                float left = a2 > 0 ? vols.get(a2 - 1) : -1.0
+                float right = z2 < nBins - 1 ? vols.get(z2 + 1) : -1.0
+                if right >= left
+                    z2 += 1
+                    sum += vols.get(z2)
+                else
+                    a2 -= 1
+                    sum += vols.get(a2)
+            poc := lo + (p + 0.5) * step
+            zlo := lo + a2 * step
+            zhi := lo + (z2 + 1) * step
+    [poc, zlo, zhi]
+
+// daily profiles: 3 months and 1 year. Today's daily bar is skipped while it is still forming.
+dailyProfiles() =>
+    float p2 = na, float l2 = na, float h2 = na
+    float p3 = na, float l3 = na, float h3 = na
+    if barstate.islast
+        int off = time_close < timenow ? 0 : 1
+        [d, e, f] = profile(off, 63)
+        [g, h, k] = profile(off, 252)
+        p2 := d, l2 := e, h2 := f
+        p3 := g, l3 := h, h3 := k
+    [p2, l2, h2, p3, l3, h3]
+
+// 5-minute profiles: yesterday, 5 days and 20 days. Today's bars are skipped while the session is still trading;
+// once the session is over (no new 5-minute bar for 15 minutes) the latest session counts as "yesterday".
+intradayProfiles() =>
+    var starts = array.new<int>()
+    if bar_index == 0 or time_tradingday != time_tradingday[1]
+        starts.push(bar_index)
+        if starts.size() > 40
+            starts.shift()
+    float p1 = na, float l1 = na, float h1 = na
+    float p2 = na, float l2 = na, float h2 = na
+    float p3 = na, float l3 = na, float h3 = na
+    int n = starts.size()
+    if barstate.islast and n >= 2
+        bool sessionOver = timenow - time > 15 * 60 * 1000
+        int endStart = sessionOver ? bar_index + 1 : starts.get(n - 1)   // the first bar NOT used
+        int k0 = sessionOver ? n : n - 1                                 // sessions before endStart
+        int off = bar_index - endStart + 1
+        if k0 >= 1
+            [a, b, c] = profile(off, endStart - starts.get(k0 - 1))
+            p1 := a, l1 := b, h1 := c
+        if k0 >= 5
+            [d, e, f] = profile(off, endStart - starts.get(k0 - 5))
+            p2 := d, l2 := e, h2 := f
+        if k0 >= 20
+            [g, h, k] = profile(off, endStart - starts.get(k0 - 20))
+            p3 := g, l3 := h, h3 := k
+    [p1, l1, h1, p2, l2, h2, p3, l3, h3]
+
+[dP63, dL63, dH63, dP252, dL252, dH252] = request.security(syminfo.tickerid, "D", dailyProfiles(), lookahead = barmerge.lookahead_off)
+[iPy, iLy, iHy, iP5, iL5, iH5, iP20, iL20, iH20] = request.security(syminfo.tickerid, "5", intradayProfiles(), lookahead = barmerge.lookahead_off)
+
+// ---- confluence on the last bar ---------------------------------------------------------------------------------
+var array<box> drawn = array.new<box>()
+var array<label> tags = array.new<label>()
+var table tbl = table.new(position.top_right, 4, 12, bgcolor = color.new(color.black, 85), border_width = 1)
+
+float sLo = na
+float sHi = na
+float sCoreLo = na
+float sCoreHi = na
+int sScore = 0
+
+if barstate.islast
+    for b in drawn
+        b.delete()
+    drawn.clear()
+    for t in tags
+        t.delete()
+    tags.clear()
+
+    names = array.new<string>()
+    los = array.new<float>()
+    his = array.new<float>()
+    pocs = array.new<float>()
+    if useIntra and not na(iLy)
+        names.push("yesterday"), los.push(iLy), his.push(iHy), pocs.push(iPy)
+    if useIntra and not na(iL5)
+        names.push("5 days"), los.push(iL5), his.push(iH5), pocs.push(iP5)
+    if useIntra and not na(iL20)
+        names.push("20 days"), los.push(iL20), his.push(iH20), pocs.push(iP20)
+    if not na(dL63)
+        names.push("3 months"), los.push(dL63), his.push(dH63), pocs.push(dP63)
+    if not na(dL252)
+        names.push("1 year"), los.push(dL252), his.push(dH252), pocs.push(dP252)
+
+    int m = names.size()
+    edges = array.new<float>()
+    for j = 0 to m - 1
+        edges.push(los.get(j))
+        edges.push(his.get(j))
+    edges.sort()
+
+    // walk the segments between edges; merge touching segments where 2+ profiles overlap
+    zLo = array.new<float>(), zHi = array.new<float>(), zCLo = array.new<float>(), zCHi = array.new<float>()
+    zScore = array.new<int>(), zWho = array.new<string>()
+    float cLo = na, float cHi = na, float ccLo = na, float ccHi = na
+    int cScore = 0
+    string cWho = ""
+    if edges.size() >= 2
+        for e = 0 to edges.size() - 2
+            float a = edges.get(e)
+            float b = edges.get(e + 1)
+            if b > a
+                float mid = (a + b) / 2
+                int cnt = 0
+                string who = ""
+                for j = 0 to m - 1
+                    if mid >= los.get(j) and mid <= his.get(j)
+                        cnt += 1
+                        who := who == "" ? names.get(j) : who + ", " + names.get(j)
+                if cnt >= 2
+                    if not na(cHi) and math.abs(cHi - a) < 1e-10
+                        if cnt > cScore
+                            ccLo := a, ccHi := b, cScore := cnt
+                        else if cnt == cScore and math.abs(ccHi - a) < 1e-10
+                            ccHi := b
+                        cHi := b
+                        for j = 0 to m - 1
+                            if mid >= los.get(j) and mid <= his.get(j) and not str.contains(cWho, names.get(j))
+                                cWho := cWho + ", " + names.get(j)
+                    else
+                        if not na(cLo)
+                            zLo.push(cLo), zHi.push(cHi), zCLo.push(ccLo), zCHi.push(ccHi), zScore.push(cScore), zWho.push(cWho)
+                        cLo := a, cHi := b, ccLo := a, ccHi := b, cScore := cnt, cWho := who
+                else if not na(cLo)
+                    zLo.push(cLo), zHi.push(cHi), zCLo.push(ccLo), zCHi.push(ccHi), zScore.push(cScore), zWho.push(cWho)
+                    cLo := na, cHi := na, cScore := 0, cWho := ""
+        if not na(cLo)
+            zLo.push(cLo), zHi.push(cHi), zCLo.push(ccLo), zCHi.push(ccHi), zScore.push(cScore), zWho.push(cWho)
+
+    int left = bar_index - drawBack
+    int right = bar_index + 15
+    int best = -1
+    for z = 0 to zLo.size() - 1
+        if zLo.size() == 0
+            break
+        int sc = zScore.get(z)
+        // the band, light
+        drawn.push(box.new(left, zHi.get(z), right, zLo.get(z), border_color = color.new(zoneColor, 100), bgcolor = color.new(zoneColor, 90), extend = extend.right))
+        // the core, darker with dashed edges (more timeframes = darker)
+        drawn.push(box.new(left, zCHi.get(z), right, zCLo.get(z), border_color = color.new(zoneColor, 20), border_style = line.style_dashed, bgcolor = color.new(zoneColor, math.max(50, 88 - 9 * sc)), extend = extend.right))
+        tags.push(label.new(right, zCHi.get(z), "Magnet ×" + str.tostring(sc) + " · " + zWho.get(z), style = label.style_label_lower_left, color = color.new(zoneColor, 100), textcolor = zoneColor, size = size.small))
+        if best < 0 or sc > zScore.get(best) or (sc == zScore.get(best) and zHi.get(z) - zLo.get(z) < zHi.get(best) - zLo.get(best))
+            best := z
+    if best >= 0
+        sLo := zLo.get(best), sHi := zHi.get(best), sCoreLo := zCLo.get(best), sCoreHi := zCHi.get(best), sScore := zScore.get(best)
+
+    if showAll
+        for j = 0 to m - 1
+            drawn.push(box.new(left, his.get(j), right, los.get(j), border_color = color.new(zoneColor, 60), bgcolor = color.new(zoneColor, 100), extend = extend.right))
+
+    if showTable
+        tbl.clear(0, 0, 3, 11)
+        tbl.cell(0, 0, "Profile", text_color = color.white, text_size = size.small)
+        tbl.cell(1, 0, "POC", text_color = color.white, text_size = size.small)
+        tbl.cell(2, 0, "Zone", text_color = color.white, text_size = size.small)
+        for j = 0 to m - 1
+            tbl.cell(0, j + 1, names.get(j), text_color = color.white, text_size = size.small)
+            tbl.cell(1, j + 1, str.tostring(pocs.get(j), format.mintick), text_color = color.white, text_size = size.small)
+            tbl.cell(2, j + 1, str.tostring(los.get(j), format.mintick) + " – " + str.tostring(his.get(j), format.mintick), text_color = color.white, text_size = size.small)
+        int r = m + 1
+        string strongest = best >= 0 ? "×" + str.tostring(sScore) + " core " + str.tostring(sCoreLo, format.mintick) + " – " + str.tostring(sCoreHi, format.mintick) : "No purple zone (no two profiles agree)"
+        tbl.cell(0, r, "Purple", text_color = zoneColor, text_size = size.small, bgcolor = color.new(color.white, 85))
+        tbl.cell(1, r, strongest, text_color = zoneColor, text_size = size.small, bgcolor = color.new(color.white, 85))
+        tbl.merge_cells(1, r, 2, r)
+
+// hidden outputs (data window / alerts): the strongest purple zone
+plot(sCoreLo, "Strongest core low", color = zoneColor, display = display.data_window)
+plot(sCoreHi, "Strongest core high", color = zoneColor, display = display.data_window)
+plot(sScore, "Strongest score", display = display.data_window)
+alertcondition(not na(sCoreLo) and low <= sCoreHi and high >= sCoreLo, "Price at the purple zone", "{{ticker}} is trading at its strongest purple zone")
