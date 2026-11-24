@@ -80,6 +80,10 @@ public class StockRow {
     /** 1 Bull Distribution, 2 Bull Absorption, 3 Bear Absorption, 4 Bull Manipulation, 5 Bull Accumulation, 9 anything else. */
     public int sessionGroup = 9;
 
+    // purple zones (multi-timeframe magnet zones) and where price sits between them
+    public java.util.List<com.personalscreener.analysis.MagnetZones.Zone> purpleZones = new java.util.ArrayList<>();
+    public com.personalscreener.analysis.PurpleZone.Reading purple;
+
     // quantum shift (1h)
     public Double qsEnergy;
     public int qsRegime;

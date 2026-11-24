@@ -35,6 +35,8 @@
   const etTime = (iso) => iso ? new Date(iso).toLocaleTimeString('en-US', { timeZone: 'America/New_York', hour: 'numeric', minute: '2-digit', second: '2-digit' }) : '—';
   const etStamp = (iso) => iso ? new Date(iso).toLocaleString('en-US', { timeZone: 'America/New_York', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) + ' ET' : '—';
   const arrow = (t) => t > 0 ? '↑' : t < 0 ? '↓' : '–';
+  const PZ = { AT_BUY: 'AT BUY ZONE', NEAR_BUY: 'NEAR BUY ZONE', MIDDLE: 'MIDDLE', INSIDE: 'INSIDE A ZONE', NEAR_SELL: 'NEAR SELL ZONE', AT_SELL: 'AT SELL ZONE', BROKE_SUPPORT: 'BROKE BELOW SUPPORT', NONE: 'NO STRONG ZONE' };
+  const PZ_RANK = { AT_BUY: 0, NEAR_BUY: 1, MIDDLE: 2, INSIDE: 3, NEAR_SELL: 4, AT_SELL: 5, BROKE_SUPPORT: 6, NONE: 7 };
   const SIGNAL = { BUY_NOW: 'Buy now', READY: 'Ready to buy', READY_SELL: 'Ready to sell', SELL_NOW: 'Sell now', HOLD: 'Hold', WAIT: 'Wait' };
   const TREND = { STRONG_UPTREND: 'Strong Uptrend', EARLY_BULLISH_REVERSAL: 'Early Bullish Reversal', EARLY_BEARISH_REVERSAL: 'Early Bearish Reversal', NO_UPTREND: 'No Uptrend' };
   const zoyaLabel = { COMPLIANT: 'Compliant', NON_COMPLIANT: 'Not compliant', QUESTIONABLE: 'Questionable', NOT_COVERED: 'Not covered', NOT_CHECKED: 'Not checked' };
@@ -70,6 +72,7 @@
   // ---------- controls (remembered per viewer) ----------
   const controls = ['search', 'signalFilter', 'stateFilter', 'sortBy', 'gexState', 'gexBias'];
   const saved = store.get('controls', {});
+  if (!store.get('purpleSortDefault', false)) { saved.sortBy = 'purple'; store.set('controls', saved); store.set('purpleSortDefault', true); }
   controls.forEach((id) => {
     const el = $('#' + id);
     if (saved[id] !== undefined) { if (el.type === 'checkbox') el.checked = saved[id]; else el.value = saved[id]; }
@@ -113,6 +116,8 @@
     const cmp = {
       screen: (a, b) => (a.rank || 999) - (b.rank || 999),
       long: (a, b) => (b.longScore || 0) - (a.longScore || 0) || (a.rank || 999) - (b.rank || 999),
+      purple: (a, b) => (PZ_RANK[a.purple?.status] ?? 8) - (PZ_RANK[b.purple?.status] ?? 8)
+        || (a.purple?.buyDistAtr ?? 1e9) - (b.purple?.buyDistAtr ?? 1e9) || (a.rank || 999) - (b.rank || 999),
       range: (a, b) => (isNum(a.rangeUsedPct) ? a.rangeUsedPct : 1e9) - (isNum(b.rangeUsedPct) ? b.rangeUsedPct : 1e9),
       rr: (a, b) => v(b.rewardRisk) - v(a.rewardRisk),
       phase: (a, b) => (a.sessionGroup || 9) - (b.sessionGroup || 9) || (b.sessionPct || 0) - (a.sessionPct || 0),
@@ -284,7 +289,7 @@
         <div class="book">${book}</div></td>
       ${withActions ? `<td>${r.userAdded ? `<button class="ghost small" data-remove="${esc(r.symbol)}">Remove</button>` : ''}
         <div><a href="#" class="link small" data-tech="${esc(r.symbol)}">Chart</a></div></td>` : ''}
-    </tr>${withActions && openChain.has(r.symbol) ? `<tr class="chainrow"><td colspan="${HEAD.length + 1}">${chainHtml(r.symbol)}</td></tr>` : ''}${withActions && openBook.has(r.symbol) ? `<tr class="chainrow"><td colspan="${HEAD.length + 1}">${bookHtml(r.symbol)}</td></tr>` : ''}`;
+    </tr>${r.list === 'CORE' && r.purple ? `<tr class="pzrow tc ${esc(r.trendClass || 'NO_UPTREND')}"><td colspan="${HEAD.length + (withActions ? 1 : 0)}">${purpleHtml(r)}</td></tr>` : ''}${withActions && openChain.has(r.symbol) ? `<tr class="chainrow"><td colspan="${HEAD.length + 1}">${chainHtml(r.symbol)}</td></tr>` : ''}${withActions && openBook.has(r.symbol) ? `<tr class="chainrow"><td colspan="${HEAD.length + 1}">${bookHtml(r.symbol)}</td></tr>` : ''}`;
   }
 
   // ---------- playbook (inline under a row) ----------
@@ -326,6 +331,24 @@
       <div class="tablewrap"><table class="grid"><thead><tr><th>Strategy</th><th class="num">Trades</th><th class="num">Win</th><th class="num">PF</th><th class="num">Avg</th><th class="num">Total</th><th>Verdict</th><th>Now</th></tr></thead><tbody>${rows}</tbody></table></div>
       <p class="meta">Edge = at least 8 trades, profit factor 1.3+ and a positive average trade on this stock. The plan uses the best strategy that has an edge and is active now; otherwise it says no trade. Past results do not promise future ones.</p>
     </div>`;
+  }
+
+  // ---------- purple zone block (buy zone / sell zone) ----------
+  function purpleHtml(r) {
+    const p = r.purple;
+    if (!p) return '';
+    const z = (x) => x ? `×${x.score}: ${fix(x.low)}–${fix(x.high)}${x.coreLow !== x.low || x.coreHigh !== x.high ? ` (core ${fix(x.coreLow)}–${fix(x.coreHigh)})` : ''}` : '';
+    const lines = [];
+    if (p.buyZone) lines.push(`<span class="pzk">Buy zone</span> ${z(p.buyZone)} · ${isNum(p.buyDistAtr) ? fix(p.buyDistAtr) + ' ATR / ' : ''}${fix(p.buyDistPct, 1)}% below`);
+    else lines.push('<span class="pzk">Buy zone</span> no strong zone below');
+    if (p.sellZone) lines.push(`<span class="pzk">Sell zone</span> ${z(p.sellZone)} · ${isNum(p.sellDistAtr) ? fix(p.sellDistAtr) + ' ATR / ' : ''}${fix(p.sellDistPct, 1)}% above`);
+    else lines.push('<span class="pzk">Sell zone</span> no strong zone above');
+    if (p.currentZone && p.status !== 'AT_BUY') lines.push(`<span class="pzk">In zone</span> ${z(p.currentZone)}`);
+    if (p.closerTo) lines.push(`<span class="pzk">Closer to</span> <b>${p.closerTo === 'BUY' ? 'buy zone' : 'sell zone'}</b>${isNum(p.pos) ? ` (position ${fix(p.pos)})` : ''}`);
+    const plan = p.plan ? `<div class="pzplan">Plan: entry <b>${money(p.plan.entry)}</b> · stop <b>${money(p.plan.stop)}</b> · target <b>${money(p.plan.target)}</b> · R:R 1:${fix(p.plan.rr, 1)}${isNum(p.plan.shares) ? ` · <b>${p.plan.shares} shares</b> (${money(p.plan.positionValue)}, ${money(p.plan.dollarsAtRisk)} at risk)` : ''}</div>`
+      : p.note ? `<div class="meta">${esc(p.note)}</div>` : '';
+    return `<div class="pzbox"><span class="pzt">Purple zone</span> <span class="pzbadge ${esc(p.status)}">${esc(PZ[p.status] || p.status)}</span>
+      <div class="pzlines">${lines.map((l) => `<span>${l}</span>`).join('')}</div>${plan}</div>`;
   }
 
   // ---------- option chain (inline under a row) ----------
@@ -1278,6 +1301,7 @@
         <li><b>Option chains</b> come from Cboe's free delayed quotes (cdn.cboe.com, every expiry in one file, no login), with Yahoo as the fallback; set SCREENER_OPTIONS_SOURCE=yahoo to use Yahoo only. A name whose chain could not be read is tried again on the next screen; when chains are missing, the note above the lists says why and <code>GET /api/chains/status</code> has the details.</li>
         <li><b>Chain</b> (button on each Core row): the stock's option chain under its row. Put open interest to the left, call open interest to the right, by strike, for the 30 strikes nearest the price, with the call wall, put wall, King and the price marked, and IV and net gamma per strike. Pick all expiries in the 45-day window or one expiry. Read when you open it and kept for 15 minutes.</li>
         <li><b>GEX levels</b>: every listed stock's option chain is read once a day (8:00 AM ET on weekdays, and on the first screen for a name that is new that day). Open interest is summed by strike across the expiries in the next 45 days. Call wall: the strike with the most call open interest. Put wall: the strike with the most put open interest. King: the strike with the largest net gamma exposure. Each shows its open interest and its share of all open interest in the window. Expiry is the date holding the most open interest; "as of" flags a chain that could not be refreshed today.</li>
+        <li><b>Purple zone</b> (block on each Core row; the default sort): from the stock's strong purple zones (3+ timeframes agree), the <b>buy zone</b> is the strongest zone below the price (support) and the <b>sell zone</b> the strongest above (resistance). Distances are in ATR and %. Status: AT BUY ZONE (inside it or within 0.25 ATR above), NEAR BUY ZONE (within 1 ATR, or in the lower third of the way to the sell zone), MIDDLE, NEAR SELL ZONE, AT SELL ZONE, INSIDE A ZONE, BROKE BELOW SUPPORT (closed through the zone below), NO STRONG ZONE. At or near the buy zone it plans entry at the zone's top, the stop just under its bottom and the target at the sell zone's bottom, sized from your profile, only when R:R meets your minimum. The list sorts by this status (closest to the buy zone first), then by the distance to the buy zone; the super stock stays on top.</li>
         <li><b>Magnet zones</b> (purple bands on the Sessions chart): a volume profile spreads each candle's volume across its price range; the price bin with the most volume is the point of control, and the band around it holding 20% of the volume is that profile's magnet zone (70% is the value area). Five profiles are built: yesterday, the last 5 and 20 days (5-minute candles, regular hours for stocks) and 3 months and 1 year (daily candles). Where two or more overlap is a magnet zone, darker the more timeframes agree. The line under the chart tests the strongest zone walk-forward on that symbol over 60 days: how often price touched it, and on days that opened more than 1 ATR away, how often it reached the zone against a mirror band the same distance on the other side. In testing the zones are touched often but rarely pull price from far away: use them as levels, not targets. The trading plan bot uses them (a zone above is a target or, closer than 2R, a reason to skip; stops never sit inside a zone; an entry at a zone earns a grade point), and the Playbook tests the Breakout with and without them on each stock. <code>GET /api/magnet/{symbol}</code>.</li>
         <li><b>Session phases</b> (Sessions tab): Asia 6 PM–2 AM, London 2–8 AM, New York 8 AM–5 PM ET, each scored 0–100% for accumulation (tight, quiet balance), manipulation (sweeps the prior session's high or low and closes back inside), absorption (heavy effort, no progress) and distribution (a one-way expansion). Scored on 5-minute candles only, so every timeframe shows the same boxes. Bull/Bear comes from the close location, the swept side or the body direction.</li>
         <li><b>Market line</b>: SPY, QQQ and IWM against today's VWAP, and advancers/decliners on Nasdaq and NYSE.</li>

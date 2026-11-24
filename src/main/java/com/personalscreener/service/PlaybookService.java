@@ -38,18 +38,11 @@ public class PlaybookService {
         }
     }
 
-    private static final String PROFILE = "profile.json";
-    private volatile Profile profile;
-    private final com.personalscreener.store.JsonStore store;
+    private final ProfileService profiles;
 
-    public Profile profile() { return profile; }
+    public Profile profile() { return profiles.get(); }
 
-    public Profile saveProfile(Profile p) {
-        p.validate();
-        profile = p;
-        store.write(PROFILE, p);
-        return p;
-    }
+    public Profile saveProfile(Profile p) { return profiles.save(p); }
 
     static final int MIN_TRADES = 8;
     static final double EDGE_PF = 1.3;
@@ -61,9 +54,8 @@ public class PlaybookService {
     private final MarketClock clock;
 
     public PlaybookService(YahooClient yahoo, ScreenService screen, PvService pv, PlanService plan, MarketClock clock,
-                           com.personalscreener.store.JsonStore store) {
-        this.store = store;
-        this.profile = store.read(PROFILE, new com.fasterxml.jackson.core.type.TypeReference<Profile>() {}, new Profile());
+                           ProfileService profiles) {
+        this.profiles = profiles;
         this.yahoo = yahoo;
         this.screen = screen;
         this.pv = pv;
@@ -72,7 +64,7 @@ public class PlaybookService {
     }
 
     public Map<String, Object> build(String symbol, Double riskOverride) throws Exception {
-        Profile pr = profile;
+        Profile pr = profiles.get();
         double minRR = pr.minRR;
         Double riskDollars = riskOverride != null ? riskOverride : pr.riskDollars();
         double account = pr.account;

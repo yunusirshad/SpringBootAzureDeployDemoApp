@@ -1,6 +1,7 @@
 package com.personalscreener.service;
 
 import com.personalscreener.analysis.SessionPhases;
+import com.personalscreener.analysis.MagnetZones;
 import com.personalscreener.analysis.TrendClassifier;
 import com.personalscreener.analysis.Indicators;
 import com.personalscreener.analysis.QualityScorer;
@@ -15,6 +16,7 @@ import com.personalscreener.model.StockRow;
 import org.springframework.stereotype.Component;
 
 import java.time.Instant;
+import java.time.LocalTime;
 import java.time.LocalDate;
 import java.time.ZonedDateTime;
 import java.util.ArrayList;
@@ -106,7 +108,7 @@ public class StockAnalyzer {
         row.trendNote = "Trend: " + (m15.size() + h1.size() + h4.size()) + " completed candles"
                 + (h1.isEmpty() ? "" : " · last 1h " + hhmm(h1.get(h1.size() - 1).time() + 3600));
 
-        readSession(row, c.symbol(), nowSec);
+        readSession(row, c.symbol(), nowSec, done);
 
         if (h1.size() >= 120) {
             var qs = com.personalscreener.analysis.QuantumShift.compute(h1, 60);
@@ -199,9 +201,10 @@ public class StockAnalyzer {
      * counts once it has 30 minutes of candles; before that the last finished session is used. Stocks have no
      * Asia session, so this is pre-market (London hours) or New York.
      */
-    private void readSession(StockRow row, String symbol, long nowSec) {
+    private void readSession(StockRow row, String symbol, long nowSec, List<Bar> daily) {
         try {
             List<Bar> base = yahoo.chart(symbol, "5m", "1mo", true).bars();
+            purpleZones(row, base, daily, nowSec);
             List<SessionPhases.Session> all = SessionPhases.read(base, nowSec, true);
             SessionPhases.Session s = null;
             for (int i = all.size() - 1; i >= 0 && s == null; i--) {
@@ -218,6 +221,25 @@ public class StockAnalyzer {
                     + "% · Abs " + s.absorption().pct() + "% · Dist " + s.distribution().pct() + "%";
         } catch (Exception e) {
             row.sessionPhase = null;
+        }
+    }
+
+    /**
+     * The stock's purple zones from the month of 5-minute candles (regular hours) and the year of daily candles it
+     * already has, using completed sessions only: today's counts once the regular session is over.
+     */
+    private void purpleZones(StockRow row, List<Bar> base, List<Bar> daily, long nowSec) {
+        try {
+            ZonedDateTime now = Instant.ofEpochSecond(nowSec).atZone(MarketClock.ET);
+            LocalDate before = !clock.isTradingDay(now.toLocalDate()) || !now.toLocalTime().isBefore(LocalTime.of(16, 0))
+                    ? now.toLocalDate().plusDays(1) : now.toLocalDate();
+            List<Bar> regular = base.stream().filter(b -> {
+                LocalTime t = Instant.ofEpochSecond(b.time()).atZone(MarketClock.ET).toLocalTime();
+                return !t.isBefore(LocalTime.of(9, 30)) && t.isBefore(LocalTime.of(16, 0));
+            }).toList();
+            row.purpleZones = MagnetZones.confluence(MagnetZones.profiles(regular, daily, before));
+        } catch (Exception e) {
+            row.purpleZones = new ArrayList<>();
         }
     }
 

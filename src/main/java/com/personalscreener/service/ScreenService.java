@@ -38,6 +38,7 @@ public class ScreenService {
 
     private final ScreenerProperties props;
     private final CboeClient cboe;
+    private final ProfileService profiles;
     private final SignalAlertService signalAlerts;
     private final TradingViewClient tv;
     private final YahooClient yahoo;
@@ -67,7 +68,9 @@ public class ScreenService {
 
     public ScreenService(ScreenerProperties props, TradingViewClient tv, YahooClient yahoo, ZoyaService zoya,
                          StockAnalyzer analyzer, WatchlistService watchlist, AlertService alerts,
-                         MarketClock clock, JsonStore store, CboeClient cboe, SignalAlertService signalAlerts) {
+                         MarketClock clock, JsonStore store, CboeClient cboe, SignalAlertService signalAlerts,
+                         ProfileService profiles) {
+        this.profiles = profiles;
         this.props = props;
         this.signalAlerts = signalAlerts;
         this.cboe = cboe;
@@ -283,6 +286,9 @@ public class ScreenService {
             r.longScore = ls.score();
             r.longScoreParts = ls.parts();
             r.sessionGroup = sessionGroup(r.sessionPhase);
+            var pr = profiles.get();
+            r.purple = com.personalscreener.analysis.PurpleZone.classify(Num.d(r.price), Num.d(r.atr), Num.d(r.previousClose),
+                    r.purpleZones, com.personalscreener.analysis.PurpleZone.DEFAULT_MIN_SCORE, pr.account, pr.riskDollars(), pr.minRR);
             SetupScore.Result su = SetupScore.of(r);
             r.setupScore = su.score();
             r.setupParts = su.parts();
