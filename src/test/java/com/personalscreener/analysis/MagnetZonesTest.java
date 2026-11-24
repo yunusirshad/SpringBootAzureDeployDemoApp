@@ -47,4 +47,24 @@ class MagnetZonesTest {
         assertTrue(MagnetZones.verdict(20, 6, 30.0, 5.0).startsWith("The zone pulls price"));
         assertTrue(MagnetZones.verdict(5, 3, 60.0, 0.0).startsWith("Too few"));
     }
+
+    @Test
+    void dailyProfilesCoverThreeTimeframes() {
+        List<Bar> d = new ArrayList<>();
+        for (int i = 0; i < 300; i++) d.add(bar(i * 86_400L, 10 + (i % 7) * 0.1, 10.3 + (i % 7) * 0.1, 1000));
+        var p = MagnetZones.dailyProfiles(d);
+        assertEquals(List.of("20 days", "3 months", "1 year"), new ArrayList<>(p.keySet()));
+    }
+
+    @Test
+    void breakoutWithoutMagnetIsUnchanged() {
+        List<Bar> d = new ArrayList<>();
+        double c = 10;
+        for (int i = 0; i < 400; i++) {
+            double o = c;
+            c = c * (1 + ((i * 37 % 11) - 4.5) / 300.0) + 0.01;   // a choppy uptrend
+            d.add(new Bar(1_600_000_000L + i * 86_400L, o, Math.max(o, c) + 0.1, Math.min(o, c) - 0.1, c, 1000 + i));
+        }
+        assertEquals(DailyBreakout.backtest(d, 2.0, 5, 5), DailyBreakout.backtest(d, 2.0, 5, 5, false));
+    }
 }

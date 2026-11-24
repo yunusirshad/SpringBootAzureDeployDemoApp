@@ -57,6 +57,8 @@ public final class TradePlan {
         public double costBps = 5;
         /** Trading days a trade may be held: 1 is a day trade (out by 3:40 PM), 2-5 a swing trade. */
         public int holdDays = 5;
+        /** Use the multi-timeframe magnet zones for targets, stops and a grade point. */
+        public boolean useMagnet = true;
 
         public void validate() {
             if (!(minRR >= 1 && minRR <= 10)) throw new IllegalArgumentException("Minimum R:R must be 1 to 10");
@@ -69,7 +71,17 @@ public final class TradePlan {
     }
 
     /** Bars for one stock (oldest first) plus SPY's 15m bars. */
-    public record Bars(List<Bar> d1, List<Bar> h1, List<Bar> m15, List<Bar> m5, List<Bar> spy15) {}
+    public record Bars(List<Bar> d1, List<Bar> h1, List<Bar> m15, List<Bar> m5, List<Bar> spy15,
+                       Map<LocalDate, List<MagnetZones.Zone>> zoneCache) {
+        public Bars(List<Bar> d1, List<Bar> h1, List<Bar> m15, List<Bar> m5, List<Bar> spy15) {
+            this(d1, h1, m15, m5, spy15, new java.util.concurrent.ConcurrentHashMap<>());
+        }
+
+        /** The day's magnet zones, from data before that day only (computed once per day). */
+        List<MagnetZones.Zone> magnet(LocalDate day) {
+            return zoneCache.computeIfAbsent(day, d -> MagnetZones.confluence(MagnetZones.profiles(m5, d1, d)));
+        }
+    }
 
     public record Setup(String type, String grade, int points, List<String> confluence, long signalTime, double entry,
                         double stop, double target, double rr, String targetSource, SmcZones.Zone zone, String trendClass) {
@@ -190,6 +202,10 @@ public final class TradePlan {
         double swing = Double.POSITIVE_INFINITY;
         for (int k = Math.max(0, n5 - 6); k < n5; k++) swing = Math.min(swing, m5.get(k).low());
         double stop = type.equals("FIB") ? structureLow - 0.1 * atr15 : Math.min(structureLow, swing) - 0.1 * atr15;
+        List<MagnetZones.Zone> magnets = s.useMagnet ? b.magnet(day) : List.of();
+        for (MagnetZones.Zone z : magnets) {
+            if (z.low() < stop && stop < z.high() && z.high() < entry) stop = z.low() - 0.1 * atr15;   // never inside a zone
+        }
         double risk = entry - stop;
         if (!(risk > 0)) return new Look(null, null, "No room for a stop");
         if (risk / entry * 100 > s.maxStopPct) return new Look(null, zoneText, String.format("Stop %.1f%% away (over %.1f%%)", risk / entry * 100, s.maxStopPct));
@@ -200,6 +216,7 @@ public final class TradePlan {
         for (int k = Math.max(0, h1.size() - 20); k < h1.size(); k++) hh = Math.max(hh, h1.get(k).high());
         if (hh > entry) above.putIfAbsent(hh, "20-hour high");
         for (SmcZones.Zone z : all) if (!z.bullish() && z.low() > entry) above.putIfAbsent(z.low(), z.label());
+        for (MagnetZones.Zone z : magnets) if (z.low() > entry) above.putIfAbsent(z.low(), "magnet zone ×" + z.score());
         if (!Double.isNaN(callWall) && callWall > entry) above.putIfAbsent(callWall, "call wall");
         double target;
         String targetSource;
@@ -238,6 +255,9 @@ public final class TradePlan {
         v5 /= 20;
         if (v5 > 0 && cb.volume() >= 1.2 * v5) { pts++; conf5.add("volume on the confirmation"); }
         if (rr >= 3) { pts++; conf5.add("R:R 3+"); }
+        for (MagnetZones.Zone z : magnets) {
+            if (entry >= z.low() && entry <= z.high() + 0.5 * atr15) { pts++; conf5.add("at a magnet zone ×" + z.score()); break; }
+        }
         String grade = pts >= 4 ? "A" : pts >= 2 ? "B" : "C";
         conf5.add(0, tc.trendClass().equals(TrendClassifier.STRONG) ? "daily Strong Uptrend" : "daily Early Bullish Reversal");
         return new Look(new Setup(type, grade, pts, conf5, cb.time(), entry, stop, target, rr, targetSource, zone, tc.trendClass()),

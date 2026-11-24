@@ -22,6 +22,15 @@ public final class DailyBreakout {
     private DailyBreakout() {}
 
     public static List<Trade> backtest(List<Bar> d, double targetR, int holdDays, double costBps) {
+        return backtest(d, targetR, holdDays, costBps, false);
+    }
+
+    /**
+     * {@code useMagnet}: with daily magnet zones (20 days, 3 months, 1 year of daily volume profiles, from data before
+     * the day), skip a trade when a zone starts between the entry and the target (supply in the way), and move a stop
+     * that falls inside a zone to just under it.
+     */
+    public static List<Trade> backtest(List<Bar> d, double targetR, int holdDays, double costBps, boolean useMagnet) {
         List<Trade> out = new ArrayList<>();
         int n = d.size();
         if (n < 215) return out;
@@ -37,6 +46,14 @@ public final class DailyBreakout {
             double entry = Math.max(b.open(), prev.high() + 0.01);
             double stop = Math.max(prev.low(), entry - atr[i - 1]);
             if (!(stop < entry)) { i++; continue; }
+            if (useMagnet) {
+                List<MagnetZones.Zone> zs = MagnetZones.confluence(MagnetZones.dailyProfiles(d.subList(0, i)));
+                for (MagnetZones.Zone z : zs) if (z.low() < stop && stop < z.high() && z.high() < entry) stop = z.low() - 0.1 * atr[i - 1];
+                double tgt = entry + targetR * (entry - stop);
+                boolean blocked = false;
+                for (MagnetZones.Zone z : zs) if (z.low() > entry && z.low() < tgt) blocked = true;
+                if (blocked) { i++; continue; }
+            }
             double risk = entry - stop, target = entry + targetR * risk;
             int k = i;
             double exit;

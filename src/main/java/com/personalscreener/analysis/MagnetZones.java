@@ -141,6 +141,16 @@ public final class MagnetZones {
         return out;
     }
 
+    /** Daily-only profiles (20 days, 3 months, 1 year), for backtests longer than the 60 days of 5-minute data. */
+    public static Map<String, Profile> dailyProfiles(List<Bar> dailyBefore) {
+        Map<String, Profile> out = new LinkedHashMap<>();
+        int n = dailyBefore.size();
+        put(out, "20 days", dailyBefore.subList(Math.max(0, n - 20), n));
+        put(out, "3 months", dailyBefore.subList(Math.max(0, n - 63), n));
+        put(out, "1 year", dailyBefore.subList(Math.max(0, n - 252), n));
+        return out;
+    }
+
     private static List<Bar> lastDays(TreeMap<LocalDate, List<Bar>> byDay, List<LocalDate> ds, int n) {
         List<Bar> l = new ArrayList<>();
         for (int i = Math.max(0, ds.size() - n); i < ds.size(); i++) l.addAll(byDay.get(ds.get(i)));

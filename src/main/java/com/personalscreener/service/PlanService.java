@@ -167,7 +167,8 @@ public class PlanService {
         for (String sym : symbols) {
             fs.put(sym, pool.submit(() -> {
                 // an open swing trade needs its 5m candles back to the entry
-                String m5Range = open.containsKey(sym) && s.holdDays > 1 ? "1mo" : "5d";
+                // a month of 5m candles: the magnet zones need 20 days, and an open swing trade needs its entry
+                String m5Range = "1mo";
                 TradePlan.Bars b = new TradePlan.Bars(slow(sym, "1d", "2y"), slow(sym, "60m", "3mo"),
                         yahoo.bars(sym, "15m", "10d"), yahoo.bars(sym, "5m", m5Range), spy15);
                 StockRow row = names.get(sym);

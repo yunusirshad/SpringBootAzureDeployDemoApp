@@ -112,6 +112,25 @@ public class PlaybookService {
                     boEntry, boStop, boEntry + boR * (boEntry - boStop), String.format("%.1fR; hold up to 5 trading days, breakeven after +1R", boR), riskDollars, account));
         }
 
+        // 1b. the same breakout with the daily magnet zones (skip when a zone is in the way, stops under zones)
+        List<DailyBreakout.Trade> bm = DailyBreakout.backtest(done, boR, 5, 5, true);
+        Map<String, Object> bmS = summary("Breakout + magnet zones", String.format("As the Breakout, but skipped when a daily magnet zone (20 days, 3 months, 1 year) starts before the %.1fR target, and a stop inside a zone moves under it", boR),
+                bm.stream().map(DailyBreakout.Trade::returnPct).toList(), bm.stream().map(DailyBreakout.Trade::rMultiple).toList(),
+                bm.stream().map(t -> t.entryDate() + " → " + t.exitReason() + String.format(" %+.1f%%", t.returnPct())).toList());
+        List<MagnetZones.Zone> zonesNow = MagnetZones.confluence(MagnetZones.dailyProfiles(done));
+        double bmStop = boStop;
+        for (MagnetZones.Zone z : zonesNow) if (z.low() < bmStop && bmStop < z.high() && z.high() < boEntry) bmStop = z.low() - 0.1 * atrD;
+        double bmTarget = boEntry + boR * (boEntry - bmStop);
+        MagnetZones.Zone inWay = zonesNow.stream().filter(z -> z.low() > boEntry && z.low() < bmTarget).min(Comparator.comparingDouble(MagnetZones.Zone::low)).orElse(null);
+        bmS.put("now", (inWay == null ? "No magnet zone between the entry and the target" : String.format("Magnet zone ×%d at %.2f-%.2f is in the way", inWay.score(), inWay.low(), inWay.high()))
+                + "; " + boS.get("now"));
+        bmS.put("active", boLive && inWay == null);
+        strategies.add(bmS);
+        if (boLive && inWay == null && bmStop < boEntry) {
+            candidates.add(plan("Breakout + magnet zones", bmS, price >= boTrigger ? "Buy now (through the trigger)" : String.format("Buy stop at %.2f (over the breakout level)", boEntry),
+                    boEntry, bmStop, bmTarget, String.format("%.1fR; hold up to 5 trading days, breakeven after +1R; the stop sits under the magnet zone", boR), riskDollars, account));
+        }
+
         // 2. PV Confirm
         Map<LocalDate, Boolean> spyAbove = PvConfirm.spyAbove(spyDaily.stream().filter(b -> done.isEmpty() || !PvConfirm.date(b).isAfter(PvConfirm.date(done.get(done.size() - 1)))).toList());
         PvConfirm.Settings ps = pv.settings();
@@ -296,6 +315,7 @@ public class PlaybookService {
         c.minTrades = s.minTrades;
         c.costBps = s.costBps;
         c.holdDays = hold;
+        c.useMagnet = s.useMagnet;
         return c;
     }
 
