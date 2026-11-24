@@ -418,6 +418,8 @@ public class PlanService {
         return m;
     }
 
+    public TradePlan.Settings settings() { return settings; }
+
     public List<PlanAlert> recent() {
         Instant since = Instant.now().minus(Duration.ofHours(24));
         return alerts.stream().filter(a -> OffsetDateTime.parse(a.at).toInstant().isAfter(since)).toList();

@@ -100,6 +100,15 @@ public final class PvConfirm {
      * @param spyAbove  for each date, whether SPY closed above its SMA200
      */
     public static Result evaluate(List<Bar> completed, Bar live, Map<LocalDate, Boolean> spyAbove, Settings s) {
+        return evaluate(completed, live, spyAbove, s, REPLAY_BARS, false);
+    }
+
+    /** Every PV Confirm trade over the whole history (for the per-stock playbook). */
+    public static List<Trade> backtest(List<Bar> completed, Map<LocalDate, Boolean> spyAbove, Settings s) {
+        return evaluate(completed, null, spyAbove, s, Integer.MAX_VALUE / 2, true).trades();
+    }
+
+    private static Result evaluate(List<Bar> completed, Bar live, Map<LocalDate, Boolean> spyAbove, Settings s, int replay, boolean allTrades) {
         int n = completed.size();
         if (n < Math.max(s.smaLength, 200) + 2) {
             return empty(n == 0 ? null : date(completed.get(n - 1)), "Only " + n + " daily bars; " + (Math.max(s.smaLength, 200) + 2) + " needed");
@@ -112,7 +121,7 @@ public final class PvConfirm {
         double[] atr = QuantumShift.atrSeries(completed, s.atrLength);
 
         List<Trade> trades = new ArrayList<>();
-        int last = n - 1, start = Math.max(Math.max(s.smaLength, 200), last - REPLAY_BARS);
+        int last = n - 1, start = Math.max(Math.max(s.smaLength, 200), last - replay);
         boolean inTrade = false;
         int entryIdx = -1, pending = -1;
         double entry = 0, stop = 0;
@@ -153,7 +162,7 @@ public final class PvConfirm {
         boolean up = trendUp(sma50, sma200, last);
         double volPct = volAvg[last] > 0 ? v[last] / volAvg[last] * 100 : Double.NaN;
         LocalDate barDate = date(completed.get(last));
-        List<Trade> recent = trades.size() > 5 ? trades.subList(trades.size() - 5, trades.size()) : trades;
+        List<Trade> recent = allTrades || trades.size() <= 5 ? trades : trades.subList(trades.size() - 5, trades.size());
 
         // 1. a BUY on the last completed bar that has already filled at today's open
         if (pending == last && live != null) {

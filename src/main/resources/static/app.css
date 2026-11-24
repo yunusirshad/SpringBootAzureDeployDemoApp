@@ -286,3 +286,5 @@ canvas.seschart { width: 100%; height: 540px; display: block; margin: 6px 0 12px
 .planwatch { margin: 4px 0; padding-left: 18px; font-size: 13px; }
 .planwatch li { margin: 2px 0; }
 .grid tr.gateon > td { background: var(--bull-bg); }
+.bookplan { border: 1px solid var(--bull); background: var(--bull-bg); border-radius: 6px; padding: 8px 12px; margin: 6px 0; font-size: 13px; }
+.bookrisk { font: inherit; padding: 2px 4px; border: 1px solid var(--border); border-radius: 4px; background: var(--surface); color: var(--text); }

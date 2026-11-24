@@ -33,11 +33,13 @@ public class ApiController {
     private final BiasService bias;
     private final SignalAlertService signalAlerts;
     private final PlanService plan;
+    private final PlaybookService playbook;
 
     public ApiController(ScreenService screen, WatchlistService watchlist, AlertService alerts, AnalyzeService analyze,
                          TechnicalsService technicals, BacktestService backtest, SessionService sessions, MarketClock clock,
                          ScreenerProperties props, ZoyaService zoya, PvService pv, BiasService bias,
-                         SignalAlertService signalAlerts, PlanService plan) {
+                         SignalAlertService signalAlerts, PlanService plan, PlaybookService playbook) {
+        this.playbook = playbook;
         this.plan = plan;
         this.signalAlerts = signalAlerts;
         this.bias = bias;
@@ -233,6 +235,17 @@ public class ApiController {
         return Map.of("started", true);
     }
 
+    // ---- per-stock playbook --------------------------------------------------------------------
+
+    /**
+     * One stock's playbook: every strategy backtested on its own history, what each says now, and a plan from the
+     * best active strategy with an edge on it. {@code risk}: dollars you will risk on the trade (for the share count).
+     */
+    @GetMapping("/playbook/{ticker}")
+    public Map<String, Object> playbook(@PathVariable String ticker, @RequestParam(required = false) Double risk) throws Exception {
+        return playbook.build(symbol(ticker), risk);
+    }
+
     // ---- trading plan bot ----------------------------------------------------------------------
 
     /** The plan bot: open plan trades, today's BUY NOW / SELL NOW, the watch list, the backtest and the settings. */
@@ -345,6 +358,7 @@ public class ApiController {
 
     @ExceptionHandler(Exception.class)
     public ResponseEntity<Map<String, String>> failed(Exception e) {
+        org.slf4j.LoggerFactory.getLogger(ApiController.class).warn("Request failed", e);
         return ResponseEntity.status(HttpStatus.BAD_GATEWAY).body(Map.of("error", String.valueOf(e.getMessage())));
     }
 }
