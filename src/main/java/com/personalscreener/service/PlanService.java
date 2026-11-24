@@ -25,10 +25,10 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * <ul>
  *   <li><b>BUY NOW</b> with entry, stop, target and the grade's backtested win rate, but only for setups whose grade
  *       has won at least {@code minWinRate}% over at least {@code minTrades} trades in the 60-day backtest;</li>
- *   <li><b>SELL NOW</b> for an open plan trade when the stop or the target is hit, when the 1h trend fails while the
- *       trade is under water (close below the 1h 20 EMA), or at 3:45 PM (it is a day trade).</li>
+ *   <li><b>SELL NOW</b> for an open plan trade when the stop (moved to breakeven after +1R) or the target is hit, or
+ *       at 3:45 PM on the last day of the hold ({@code holdDays}: 1 is a day trade, 2-5 a swing trade).</li>
  * </ul>
- * At most one plan trade per stock per day. Alerts go to the page and, when set up, to Telegram / ntfy.
+ * One trade at a time per stock; open swing trades carry over to the next days. Alerts go to the page and, when set up, to Telegram / ntfy.
  * The backtest runs after startup and at 6:30 PM ET on trading days.
  */
 @Service
@@ -150,9 +150,9 @@ public class PlanService {
         boolean session = clock.isTradingDay(today) && !time.isBefore(LocalTime.of(9, 30)) && time.isBefore(LocalTime.of(16, 0));
         long t = now.toEpochSecond();
 
-        // positions from an earlier day are closed at that day's end (it is a day trade)
-        for (OpenTrade o : List.copyOf(open.values())) {
-            if (!o.date.equals(today.toString())) { open.remove(o.symbol); }
+        // a day trade (hold 1 day) left open by a missed 3:45 PM scan is closed out; swing trades carry over
+        if (s.holdDays == 1) {
+            for (OpenTrade o : List.copyOf(open.values())) if (!o.date.equals(today.toString())) open.remove(o.symbol);
         }
 
         Map<String, StockRow> names = new LinkedHashMap<>();
@@ -166,8 +166,10 @@ public class PlanService {
         Map<String, Future<Object[]>> fs = new LinkedHashMap<>();
         for (String sym : symbols) {
             fs.put(sym, pool.submit(() -> {
+                // an open swing trade needs its 5m candles back to the entry
+                String m5Range = open.containsKey(sym) && s.holdDays > 1 ? "1mo" : "5d";
                 TradePlan.Bars b = new TradePlan.Bars(slow(sym, "1d", "2y"), slow(sym, "60m", "3mo"),
-                        yahoo.bars(sym, "15m", "10d"), yahoo.bars(sym, "5m", "5d"), spy15);
+                        yahoo.bars(sym, "15m", "10d"), yahoo.bars(sym, "5m", m5Range), spy15);
                 StockRow row = names.get(sym);
                 double callWall = row != null && row.gex != null ? row.gex.callWall() : Double.NaN;
                 return new Object[]{b, TradePlan.evaluate(b, t, s, callWall)};
@@ -224,7 +226,7 @@ public class PlanService {
         log.info("Plan scan: {} names, {} open, {} watching", scanned, open.size(), watch.size());
     }
 
-    /** Stop, target, failed 1h trend while under water, or 3:45 PM. */
+    /** The same exits the backtest measures: stop (breakeven after +1R), target, or 3:45 PM on the last hold day. */
     private void manage(OpenTrade o, TradePlan.Bars b, ZonedDateTime now) {
         long entryEpoch = OffsetDateTime.parse(o.entryAt).toEpochSecond();
         double low = Double.POSITIVE_INFINITY, high = Double.NEGATIVE_INFINITY;
@@ -237,12 +239,11 @@ public class PlanService {
         double exit = o.last == null ? o.entry : o.last;
         if (low <= o.stop) { why = o.breakeven ? "Breakeven stop hit (it had reached +1R)" : "STOP hit"; exit = o.stop; }
         else if (high >= o.target) { why = "TARGET hit"; exit = o.target; }
-        else if (!now.toLocalTime().isBefore(EOD_EXIT)) why = "End of day (3:45 PM): close the day trade";
         else {
-            List<Bar> h1 = b.h1().stream().filter(x -> x.time() + 3600 <= now.toEpochSecond()).toList();
-            if (h1.size() > 21) {
-                double[] c = com.personalscreener.analysis.Indicators.closes(h1);
-                if (c[c.length - 1] < com.personalscreener.analysis.Indicators.ema(c, 20) && exit < o.entry) why = "1h trend failed while under water";
+            int held = tradingDaysHeld(LocalDate.parse(o.date), now.toLocalDate());
+            int hold = settings.holdDays;
+            if (held >= hold && !now.toLocalTime().isBefore(EOD_EXIT)) {
+                why = hold == 1 ? "End of day (3:45 PM): close the day trade" : "Time exit: day " + held + " of " + hold + " (3:45 PM)";
             }
         }
         if (why == null) {
@@ -445,6 +446,13 @@ public class PlanService {
         List<Bar> b = yahoo.bars(sym, interval, range);
         slowCache.put(key, Map.entry(Instant.now(), b));
         return b;
+    }
+
+    /** Trading days from the entry day to {@code today}, both counted. */
+    int tradingDaysHeld(LocalDate entry, LocalDate today) {
+        int n = 0;
+        for (LocalDate d = entry; !d.isAfter(today); d = d.plusDays(1)) if (clock.isTradingDay(d)) n++;
+        return n;
     }
 
     private static String date(long epoch) { return Instant.ofEpochSecond(epoch).atZone(MarketClock.ET).toLocalDate().toString(); }

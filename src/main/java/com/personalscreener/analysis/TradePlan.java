@@ -55,6 +55,8 @@ public final class TradePlan {
         /** ...over at least this many trades. */
         public int minTrades = 15;
         public double costBps = 5;
+        /** Trading days a trade may be held: 1 is a day trade (out by 3:40 PM), 2-5 a swing trade. */
+        public int holdDays = 5;
 
         public void validate() {
             if (!(minRR >= 1 && minRR <= 10)) throw new IllegalArgumentException("Minimum R:R must be 1 to 10");
@@ -62,6 +64,7 @@ public final class TradePlan {
             if (!(minWinRate >= 0 && minWinRate <= 100)) throw new IllegalArgumentException("Win rate must be 0 to 100");
             if (minTrades < 1 || minTrades > 500) throw new IllegalArgumentException("Minimum trades must be 1 to 500");
             if (!(costBps >= 0 && costBps <= 100)) throw new IllegalArgumentException("Cost must be 0 to 100 bps");
+            if (holdDays < 1 || holdDays > 20) throw new IllegalArgumentException("Hold days must be 1 to 20");
         }
     }
 
@@ -300,24 +303,33 @@ public final class TradePlan {
         TreeSet<LocalDate> days = new TreeSet<>();
         for (Bar x : b.m5()) days.add(date(x.time()));
         double cost = s.costBps / 10_000;
+        long busyUntil = 0;   // one trade at a time per stock
         for (LocalDate d : days) {
             for (LocalTime slot = LocalTime.of(9, 45); !slot.isAfter(LAST_ENTRY); slot = slot.plusMinutes(15)) {
                 long t = d.atTime(slot).atZone(MarketClock.ET).toEpochSecond();
+                if (t <= busyUntil) continue;
                 Look l = evaluate(b, t, s, Double.NaN);
                 if (l.setup() == null) continue;
-                Trade tr = simulate(symbol, l.setup(), b.m5(), t, cost);
-                if (tr != null) out.add(tr);
-                break;   // one trade per stock per day
+                Trade tr = simulate(symbol, l.setup(), b.m5(), t, cost, true, s.holdDays);
+                if (tr != null) { out.add(tr); busyUntil = tr.exitTime(); }
+                break;   // at most one entry per stock per day
             }
         }
         return out;
     }
 
-    /** Enters at the first 5m open at or after {@code t} and walks the day's 5m candles to the exit. */
-    static Trade simulate(String symbol, Setup st, List<Bar> m5, long t, double cost) { return simulate(symbol, st, m5, t, cost, true); }
+    /** A day trade with breakeven management. */
+    static Trade simulate(String symbol, Setup st, List<Bar> m5, long t, double cost) { return simulate(symbol, st, m5, t, cost, true, 1); }
 
-    /** {@code manage}: move the stop to breakeven once the trade is up 1R. */
-    static Trade simulate(String symbol, Setup st, List<Bar> m5, long t, double cost, boolean manage) {
+    static Trade simulate(String symbol, Setup st, List<Bar> m5, long t, double cost, boolean manage) { return simulate(symbol, st, m5, t, cost, manage, 1); }
+
+    /**
+     * Enters at the first 5m open at or after {@code t} and walks the 5m candles to the exit: the stop (the open when a
+     * candle, or the next morning, gaps through it), the target, or the 3:40 PM candle on the {@code holdDays}-th
+     * trading day (TIME EXIT; END OF DAY for a day trade). {@code manage}: once up 1R the stop moves to the entry.
+     * A trade still open when the data ends is closed at the last price as END OF DATA.
+     */
+    static Trade simulate(String symbol, Setup st, List<Bar> m5, long t, double cost, boolean manage, int holdDays) {
         int i = 0;
         while (i < m5.size() && m5.get(i).time() < t) i++;
         if (i >= m5.size() || !date(m5.get(i).time()).equals(date(t))) return null;
@@ -327,19 +339,28 @@ public final class TradePlan {
         if (!(entry > stop)) return null;
         LocalDate d = date(t);
         long entryTime = m5.get(i).time();
-        boolean breakeven = false;
+        boolean breakeven = false, holdOver = false;
+        int day = 1, lastInHold = i;
+        LocalDate cur = d;
         for (int k = i; k < m5.size(); k++) {
             Bar x = m5.get(k);
-            if (!date(x.time()).equals(d)) break;
+            LocalDate xd = date(x.time());
+            if (!xd.equals(cur)) { day++; cur = xd; }
+            if (day > holdDays) { holdOver = true; break; }
+            lastInHold = k;
             ZonedDateTime z = Instant.ofEpochSecond(x.time()).atZone(MarketClock.ET);
             if (x.low() <= stop) return close(symbol, st, entryTime, entry, stop, target, x.time(), Math.min(x.open(), stop), breakeven ? "BREAKEVEN" : "STOP", risk, cost);
             if (x.high() >= target) return close(symbol, st, entryTime, entry, stop, target, x.time(), Math.max(x.open(), target), "TARGET", risk, cost);
-            if (!z.toLocalTime().isBefore(EOD_BAR)) return close(symbol, st, entryTime, entry, stop, target, x.time(), x.close(), "END OF DAY", risk, cost);
+            if (day == holdDays && !z.toLocalTime().isBefore(EOD_BAR)) return close(symbol, st, entryTime, entry, stop, target, x.time(), x.close(), timeExit(holdDays), risk, cost);
             if (manage && !breakeven && x.high() >= entry + risk) { stop = entry; breakeven = true; }   // from the next candle
         }
-        Bar last = m5.get(m5.size() - 1);
-        return date(last.time()).equals(d) ? close(symbol, st, entryTime, entry, stop, target, last.time(), last.close(), "END OF DAY", risk, cost) : null;
+        // the hold ran out on a day without a 3:40 PM candle (an early close), or the data ended first
+        Bar lb = m5.get(lastInHold);
+        String why = holdOver || day >= holdDays ? timeExit(holdDays) : "END OF DATA";
+        return close(symbol, st, entryTime, entry, stop, target, lb.time(), lb.close(), why, risk, cost);
     }
+
+    private static String timeExit(int holdDays) { return holdDays == 1 ? "END OF DAY" : "TIME EXIT"; }
 
     private static Trade close(String symbol, Setup st, long et, double entry, double stop, double target, long xt,
                                double exit, String why, double risk, double cost) {

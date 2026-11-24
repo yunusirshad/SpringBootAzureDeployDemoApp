@@ -4,6 +4,7 @@ import com.personalscreener.data.Bar;
 import com.personalscreener.market.MarketClock;
 import org.junit.jupiter.api.Test;
 
+import java.time.Instant;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.List;
@@ -150,5 +151,49 @@ class TradePlanTest {
         b[27] = new double[]{10.18, 10.3, 10.15, 10.25}; // closes above the sweep candle's high (10.15)
         Bar prevDay = new Bar(0, 10, 10.5, 9.5, 10.2, 1);
         assertEquals(9.8, TradePlan.reversalLow(fifteen(et(9, 30), b), prevDay), 1e-9);
+    }
+
+    // ---- swing holding ----
+
+    /** Five 5m candles each day (10:00-10:20) plus the 3:40 PM candle, for {@code days} weekdays from D. */
+    private static List<Bar> days(int days, double low, double high, double close) {
+        List<Bar> l = new ArrayList<>();
+        LocalDate d = D;
+        for (int n = 0; n < days; n++) {
+            for (int m = 0; m < 5; m++) l.add(new Bar(d.atTime(10, m * 5).atZone(MarketClock.ET).toEpochSecond(), close, high, low, close, 1000));
+            l.add(new Bar(d.atTime(15, 40).atZone(MarketClock.ET).toEpochSecond(), close, high, low, close, 1000));
+            do { d = d.plusDays(1); } while (d.getDayOfWeek().getValue() > 5);
+        }
+        return l;
+    }
+
+    @Test
+    void swingTradeHoldsOvernightAndExitsOnTheLastDay() {
+        var t = TradePlan.simulate("X", setup(10, 9.8, 10.4), days(6, 9.9, 10.1, 10.05), et(10, 0), 0, true, 3);
+        assertEquals("TIME EXIT", t.exitReason());
+        assertEquals(LocalDate.of(2026, 11, 26), Instant.ofEpochSecond(t.exitTime()).atZone(MarketClock.ET).toLocalDate());
+    }
+
+    @Test
+    void swingTradeReachesItsTargetOnALaterDay() {
+        List<Bar> b = days(2, 9.9, 10.1, 10.05);
+        b.add(new Bar(LocalDate.of(2026, 11, 26).atTime(10, 0).atZone(MarketClock.ET).toEpochSecond(), 10.1, 10.5, 10.05, 10.45, 1000));
+        var t = TradePlan.simulate("X", setup(10, 9.8, 10.4), b, et(10, 0), 0, true, 5);
+        assertEquals("TARGET", t.exitReason());
+    }
+
+    @Test
+    void overnightGapThroughTheStopFillsAtTheOpen() {
+        List<Bar> b = days(1, 9.9, 10.1, 10.05);
+        b.add(new Bar(LocalDate.of(2026, 11, 25).atTime(9, 30).atZone(MarketClock.ET).toEpochSecond(), 9.5, 9.6, 9.4, 9.55, 1000));
+        var t = TradePlan.simulate("X", setup(10, 9.8, 10.4), b, et(10, 0), 0, true, 5);
+        assertEquals("STOP", t.exitReason());
+        assertEquals(9.5, t.exit(), 1e-9);
+    }
+
+    @Test
+    void dataEndingEarlyIsMarked() {
+        var t = TradePlan.simulate("X", setup(10, 9.8, 10.4), days(2, 9.9, 10.1, 10.05), et(10, 0), 0, true, 5);
+        assertEquals("END OF DATA", t.exitReason());
     }
 }
