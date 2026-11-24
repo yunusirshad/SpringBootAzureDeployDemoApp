@@ -36,7 +36,7 @@ Each row must have all of these fields:
   "sellDistAtr": 1.49, "sellDistPct": 7.6,
   "pos": 0.05,
   "closerTo": "BUY",
-  "plan": { "entry": 17.03, "stop": 16.67, "target": 18.40, "rr": 3.8, "shares": 500, "positionValue": 8515, "dollarsAtRisk": 180 },
+  "plan": { "entry": 17.03, "stop": 16.67, "target": 18.40, "rr": 3.8, "shares": 504, "positionValue": 8583, "dollarsAtRisk": 180 },
   "skipNote": null,
   "signal": "SETUP FOUND", "signalScore": 78,
   "rvol": 0.51, "rvolPaced": 2.04, "rvolNeed": 2.0,
