@@ -1,0 +1,498 @@
+//@version=6
+indicator("AMAD Sessions [Asia · London · New York]", "AMAD Sessions", overlay = true, max_boxes_count = 500, max_labels_count = 500)
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// AMAD = Accumulation · Manipulation · Absorption · Distribution
+// Every session (Asia, London, New York) is scored on all four phases.
+// Stocks: "New York only" (default) shows New York alone, measured against the previous New York session.
+//   Strength mode : each phase 0–100% on its own (how strongly it happened)
+//   Share mode    : the four always total 100% (what share of the session it was)
+// All math runs on ONE fixed calculation timeframe, so the boxes and the
+// percentages are identical whichever chart timeframe you switch to.
+// Bias = session close vs session open. Now = live direction over the last N minutes.
+// Next = the phase the cycle expects after the latest session, with a confirm level.
+// Multi-timeframe table = the same reading for the current 15m / 1H / 4H / D / W candle.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// ─── Inputs ───────────────────────────────────────────────────────────────────
+grpS = "Sessions"
+nyOnly  = input.bool(true, "New York only (stocks)", group = grpS, tooltip = "Stocks trade only in New York hours, so Asia and London have no bars. On: only New York is shown and each New York session is measured against the previous New York session (prior day's high/low). Turn off for futures, forex, crypto or gold (GC) that trade around the clock.")
+tzIn    = input.string("America/New_York", "Timezone", group = grpS)
+asiaSes = input.session("1800-0300", "Asia",     group = grpS, inline = "a")
+showA   = input.bool(true, "",                    group = grpS, inline = "a")
+lonSes  = input.session("0300-0800", "London",   group = grpS, inline = "l")
+showL   = input.bool(true, "",                    group = grpS, inline = "l")
+nySes   = input.session("0800-1700", "New York", group = grpS, inline = "n")
+showN   = input.bool(true, "",                    group = grpS, inline = "n")
+
+grpE = "Engine (same result on every timeframe)"
+calcTF   = input.timeframe("15", "Calculation timeframe", group = grpE, tooltip = "All sessions are built from this timeframe, so results match on 1m, 5m, 1H, 4H, 1D… Must divide your session start/end times evenly. Charts below it calculate on the chart timeframe (same session OHLC, same result).")
+adrLen   = input.int(10, "ADR length (days)", minval = 1, group = grpE)
+tightPct = input.float(25.0, "Tight range % of ADR  → 100% Accumulated", minval = 1, group = grpE)
+widePct  = input.float(60.0, "Wide range % of ADR  → full expansion", minval = 2, group = grpE)
+sweepPct = input.float(10.0, "Sweep depth % of ADR → 100% Manipulated", minval = 1, group = grpE)
+useVol   = input.bool(true, "Use volume in Absorption", group = grpE)
+nowMin   = input.int(60, "\"Now\" direction lookback (minutes)", minval = 1, group = grpE, tooltip = "Bias = session close vs session open (the whole session). Now = where price is going over the last N minutes, so you can see a BEAR session that is recovering.")
+nowFlat  = input.float(3.0, "\"Now\" flat zone (% of ADR)", minval = 0, group = grpE)
+
+grpP = "Percentages"
+scoreMode = input.string("Strength (each 0–100%)", "Score mode", options = ["Strength (each 0–100%)", "Share (total = 100%)"], group = grpP, tooltip = "Strength: how strongly each phase happened, scored on its own, so the four can add up to more or less than 100%.\nShare: the same scores scaled so the four always add up to exactly 100%.")
+roundTo   = input.int(5, "Round percentages to", options = [1, 5, 10, 25], group = grpP)
+
+grpD = "Display"
+lblMode  = input.string("All four", "Label shows", options = ["All four", "Dominant only", "Off"], group = grpD)
+lblSize  = input.string(size.small, "Label size", options = [size.tiny, size.small, size.normal, size.large], group = grpD)
+showNext = input.bool(true, "Show \"Next expected\"", group = grpD)
+showTbl  = input.bool(true, "Show summary table", group = grpD)
+bullCol  = input.color(color.new(#26a69a, 85), "Bull box", group = grpD)
+bearCol  = input.color(color.new(#ef5350, 85), "Bear box", group = grpD)
+accCol   = input.color(#f9a825, "Accumulation", group = grpD)
+manCol   = input.color(#ba68c8, "Manipulation", group = grpD)
+absCol   = input.color(#42a5f5, "Absorption", group = grpD)
+disBull  = input.color(#00c853, "Distribution (bull)", group = grpD)
+disBear  = input.color(#ff1744, "Distribution (bear)", group = grpD)
+
+grpM = "Table"
+showMtf = input.bool(true, "Show timeframe rows in the table", group = grpM)
+mtfPos  = input.string(position.top_right, "Table position", options = [position.top_left, position.top_center, position.top_right, position.middle_left, position.middle_right, position.bottom_left, position.bottom_center, position.bottom_right], group = grpM)
+mtfLen  = input.int(20, "Average candle range length", minval = 2, group = grpM, tooltip = "For timeframe rows, each candle is compared with the average range of the last N candles of that same timeframe (instead of the daily range used for sessions).")
+tf1  = input.timeframe("15",  "Row 1", group = grpM, inline = "t1")
+use1 = input.bool(true, "", group = grpM, inline = "t1")
+tf2  = input.timeframe("60",  "Row 2", group = grpM, inline = "t2")
+use2 = input.bool(true, "", group = grpM, inline = "t2")
+tf3  = input.timeframe("240", "Row 3", group = grpM, inline = "t3")
+use3 = input.bool(true, "", group = grpM, inline = "t3")
+tf4  = input.timeframe("D",   "Row 4", group = grpM, inline = "t4")
+use4 = input.bool(true, "", group = grpM, inline = "t4")
+tf5  = input.timeframe("W",   "Row 5", group = grpM, inline = "t5")
+use5 = input.bool(true, "", group = grpM, inline = "t5")
+
+shareMode = scoreMode == "Share (total = 100%)"
+
+// ─── Engine (runs on the calculation timeframe) ──────────────────────────────
+type Sess
+    int   t0
+    int   t1
+    float o
+    float h
+    float l
+    float c
+    float v
+    float vAvg
+    float refH
+    float refL
+    float adr
+    float acc  = 0.0
+    float man  = 0.0
+    float ab   = 0.0
+    float dis  = 0.0
+    int   swp  = 0      // +1 swept the prior HIGH, -1 swept the prior LOW, 0 none
+    bool  live = false
+
+clamp01(float x) => math.max(0.0, math.min(1.0, nz(x)))
+
+method score(Sess s, float tight, float wide, float sweepK, bool useV) =>
+    rng = s.h - s.l
+    adr = na(s.adr) or s.adr <= 0 ? rng * 2.0 : s.adr
+    if rng > 0 and adr > 0
+        body = math.abs(s.c - s.o)
+        br   = body / rng
+        rr   = rng / adr
+        // ACCUMULATION: tight range relative to ADR + indecisive body
+        tightScore = clamp01((wide - rr) / (wide - tight))
+        s.acc := clamp01(0.75 * tightScore + 0.25 * (1.0 - br))
+        // MANIPULATION: sweep of the previous session's high/low, then reclaim
+        manUp = 0.0
+        manDn = 0.0
+        if not na(s.refH) and not na(s.refL)
+            upD = s.h - s.refH
+            dnD = s.refL - s.l
+            if upD > 0
+                manUp := clamp01(upD / (sweepK * adr)) * clamp01((s.h - s.c) / upD)
+            if dnD > 0
+                manDn := clamp01(dnD / (sweepK * adr)) * clamp01((s.c - s.l) / dnD)
+        s.man := math.max(manUp, manDn)
+        s.swp := s.man <= 0 ? 0 : manUp >= manDn ? 1 : -1
+        // ABSORPTION: rejection wicks (effort without result), weighted by volume
+        upW  = s.h - math.max(s.o, s.c)
+        dnW  = math.min(s.o, s.c) - s.l
+        wick = clamp01(math.max(upW, dnW) / (0.5 * rng))
+        vf   = useV and not na(s.vAvg) and s.vAvg > 0 ? clamp01(s.v / s.vAvg) : 1.0
+        s.ab := wick * (useV ? 0.5 + 0.5 * vf : 1.0)
+        // DISTRIBUTION: directional expansion that closes beyond the prior range
+        expScore = clamp01((rr - tight) / (wide - tight))
+        broke = na(s.refH) ? true : (s.c > s.refH and s.c > s.o) or (s.c < s.refL and s.c < s.o)
+        s.dis := clamp01(br / 0.6) * expScore * (broke ? 1.0 : 0.6)
+    s
+
+method step(Sess s, bool inS, float refH, float refL, float adr, float tight, float wide, float sweepK, bool useV) =>
+    isNew = inS and not s.live
+    if isNew
+        if not na(s.v)
+            s.vAvg := na(s.vAvg) ? s.v : s.vAvg * 0.8 + s.v * 0.2
+        s.t0   := time
+        s.o    := open
+        s.h    := high
+        s.l    := low
+        s.c    := close
+        s.v    := nz(volume)
+        s.refH := refH
+        s.refL := refL
+        s.adr  := adr
+        s.live := true
+    else if inS
+        s.h := math.max(s.h, high)
+        s.l := math.min(s.l, low)
+        s.c := close
+        s.v := s.v + nz(volume)
+    else
+        s.live := false
+    if inS
+        s.t1 := time_close
+        s.score(tight, wide, sweepK, useV)
+    s
+
+engine(string sA, string sL, string sN, string tz, int adrN, float tight, float wide, float sweepK, bool useV, int lbMin, bool nyO) =>
+    var Sess A = Sess.new()
+    var Sess L = Sess.new()
+    var Sess N = Sess.new()
+    // Average Daily Range from completed trading days
+    var float dH = na
+    var float dL = na
+    var array<float> ranges = array.new<float>()
+    if timeframe.change("D")
+        if not na(dH)
+            ranges.push(dH - dL)
+            if ranges.size() > adrN
+                ranges.shift()
+        dH := high
+        dL := low
+    else
+        dH := math.max(nz(dH, high), high)
+        dL := math.min(nz(dL, low), low)
+    adr = ranges.size() > 0 ? ranges.avg() : na
+
+    inA = not na(time(timeframe.period, sA, tz))
+    inL = not na(time(timeframe.period, sL, tz))
+    inN = not na(time(timeframe.period, sN, tz))
+    // Short-term direction over the last lbMin minutes (time-based, so it is the same on every chart TF)
+    nBack = math.max(1, int(math.round(lbMin * 60 / timeframe.in_seconds(timeframe.period))))
+    mom = close - close[nBack]
+    // Each session's reference range is the session before it: NY → Asia → London → NY
+    A.step(inA, N.h, N.l, adr, tight, wide, sweepK, useV)
+    L.step(inL, A.h, A.l, adr, tight, wide, sweepK, useV)
+    // New York only: the reference is the previous New York session (N.h / N.l still hold it when a new one starts)
+    N.step(inN, nyO ? N.h : L.h, nyO ? N.l : L.l, adr, tight, wide, sweepK, useV)
+    [A.t0, A.t1, A.o, A.h, A.l, A.c, A.acc, A.man, A.ab, A.dis, A.live, A.swp,
+     L.t0, L.t1, L.o, L.h, L.l, L.c, L.acc, L.man, L.ab, L.dis, L.live, L.swp,
+     N.t0, N.t1, N.o, N.h, N.l, N.c, N.acc, N.man, N.ab, N.dis, N.live, N.swp, mom, adr]
+
+// Use the calculation timeframe; if the chart is lower, use the chart TF (session OHLC is identical)
+baseTF = timeframe.in_seconds(timeframe.period) < timeframe.in_seconds(calcTF) ? timeframe.period : calcTF
+tight  = tightPct / 100.0
+wide   = math.max(widePct, tightPct + 1) / 100.0
+sweepK = sweepPct / 100.0
+
+[a0, a1, ao, ah, al, ac, aAcc, aMan, aAb, aDis, aLive, aSwp,
+ l0, l1, lo, lh, ll, lc, lAcc, lMan, lAb, lDis, lLive, lSwp,
+ n0, n1, no, nh, nl, nc, nAcc, nMan, nAb, nDis, nLive, nSwp, mom, adrV] = request.security(syminfo.tickerid, baseTF, engine(asiaSes, lonSes, nySes, tzIn, adrLen, tight, wide, sweepK, useVol, nowMin, nyOnly), lookahead = barmerge.lookahead_off)
+
+// ─── Timeframe engine: scores the CURRENT candle of a timeframe ───────────────
+// Reference range = the previous candle of the same timeframe.
+// Scale = average candle range of that timeframe ÷ 0.4, so an average candle sits
+// between "tight" (25%) and "wide" (60%), like a session does against the daily range.
+tfCalc(int n, float tight, float wide, float sweepK, bool useV) =>
+    avgR = ta.sma(high - low, n)[1]
+    Sess s = Sess.new(t0 = time, t1 = time_close, o = open, h = high, l = low, c = close, v = nz(volume), vAvg = ta.sma(nz(volume), n)[1], refH = high[1], refL = low[1], adr = avgR / 0.4)
+    s.score(tight, wide, sweepK, useV)
+    [s.acc, s.man, s.ab, s.dis, s.swp, open, high, low, close]
+
+// Score of the LAST COMPLETED candle (one candle back), so it can never change after the fact
+tfCalcPrev(int n, float tight, float wide, float sweepK, bool useV) =>
+    [a, m, b, d, sw, o, h, l, c] = tfCalc(n, tight, wide, sweepK, useV)
+    [a[1], m[1], b[1], d[1], sw[1], o[1], h[1], l[1], c[1]]
+
+// All five timeframes are read from inside the calculation timeframe (15m, or the chart's TF when lower).
+// Every chart timeframe therefore reads them through the same path → identical numbers everywhere.
+mtfAll(string t1, string t2, string t3, string t4, string t5, int n, float tight, float wide, float sweepK, bool useV) =>
+    [qa1, qb1, qc1, qd1, qe1, qo1, qh1, ql1, qk1] = request.security(syminfo.tickerid, t1, tfCalcPrev(n, tight, wide, sweepK, useV), lookahead = barmerge.lookahead_on)
+    [qa2, qb2, qc2, qd2, qe2, qo2, qh2, ql2, qk2] = request.security(syminfo.tickerid, t2, tfCalcPrev(n, tight, wide, sweepK, useV), lookahead = barmerge.lookahead_on)
+    [qa3, qb3, qc3, qd3, qe3, qo3, qh3, ql3, qk3] = request.security(syminfo.tickerid, t3, tfCalcPrev(n, tight, wide, sweepK, useV), lookahead = barmerge.lookahead_on)
+    [qa4, qb4, qc4, qd4, qe4, qo4, qh4, ql4, qk4] = request.security(syminfo.tickerid, t4, tfCalcPrev(n, tight, wide, sweepK, useV), lookahead = barmerge.lookahead_on)
+    [qa5, qb5, qc5, qd5, qe5, qo5, qh5, ql5, qk5] = request.security(syminfo.tickerid, t5, tfCalcPrev(n, tight, wide, sweepK, useV), lookahead = barmerge.lookahead_on)
+    [qa1, qb1, qc1, qd1, qe1, qo1, qh1, ql1, qk1,
+     qa2, qb2, qc2, qd2, qe2, qo2, qh2, ql2, qk2,
+     qa3, qb3, qc3, qd3, qe3, qo3, qh3, ql3, qk3,
+     qa4, qb4, qc4, qd4, qe4, qo4, qh4, ql4, qk4,
+     qa5, qb5, qc5, qd5, qe5, qo5, qh5, ql5, qk5]
+
+[m1A, m1M, m1B, m1D, m1S, m1o, m1h, m1l, m1c,
+ m2A, m2M, m2B, m2D, m2S, m2o, m2h, m2l, m2c,
+ m3A, m3M, m3B, m3D, m3S, m3o, m3h, m3l, m3c,
+ m4A, m4M, m4B, m4D, m4S, m4o, m4h, m4l, m4c,
+ m5A, m5M, m5B, m5D, m5S, m5o, m5h, m5l, m5c] = request.security(syminfo.tickerid, baseTF, mtfAll(tf1, tf2, tf3, tf4, tf5, mtfLen, tight, wide, sweepK, useVol), lookahead = barmerge.lookahead_off)
+
+// Live direction: +1 rising, -1 falling, 0 flat
+nowDir = na(mom) ? 0 : math.abs(mom) <= nz(adrV) * nowFlat / 100.0 ? 0 : mom > 0 ? 1 : -1
+nowTxt(int d) => d > 0 ? "▲ RISING" : d < 0 ? "▼ FALLING" : "◆ FLAT"
+
+// ─── Percentages (Strength or Share) ─────────────────────────────────────────
+// Returns the four display values as whole numbers. In Share mode they always total exactly 100.
+dispVals(float acc, float man, float ab, float dis) =>
+    a = nz(acc)
+    m = nz(man)
+    b = nz(ab)
+    d = nz(dis)
+    tot = a + m + b + d
+    if shareMode and tot > 0
+        a := a / tot
+        m := m / tot
+        b := b / tot
+        d := d / tot
+    ra = int(math.round(a * 100.0 / roundTo) * roundTo)
+    rm = int(math.round(m * 100.0 / roundTo) * roundTo)
+    rb = int(math.round(b * 100.0 / roundTo) * roundTo)
+    rd = int(math.round(d * 100.0 / roundTo) * roundTo)
+    if shareMode and tot > 0
+        diff = 100 - (ra + rm + rb + rd)   // rounding remainder goes to the largest phase
+        mx = math.max(a, m, b, d)
+        if mx == m
+            rm += diff
+        else if mx == d
+            rd += diff
+        else if mx == b
+            rb += diff
+        else
+            ra += diff
+    [ra, rm, rb, rd]
+
+p(int x) => str.tostring(x) + "%"
+
+dominant(float acc, float man, float ab, float dis) =>
+    m = math.max(acc, man, ab, dis)
+    m == man ? 1 : m == dis ? 3 : m == ab ? 2 : 0
+
+phaseName(int d)  => d == 0 ? "ACCUMULATION" : d == 1 ? "MANIPULATION" : d == 2 ? "ABSORPTION" : "DISTRIBUTION"
+phaseVerb(int d)  => d == 0 ? "Accumulated" : d == 1 ? "Manipulated" : d == 2 ? "Absorbed" : "Distributed"
+// Distribution is the trend move, so it takes the direction colour: green = bull, red = bear
+phaseColor(int d, bool bull) => d == 0 ? accCol : d == 1 ? manCol : d == 2 ? absCol : bull ? disBull : disBear
+fmt(float x) => str.tostring(x, format.mintick)
+
+// ─── Next expected (A → M → Ab → D cycle) ────────────────────────────────────
+// Returns [phase text, direction (+1 bull / -1 bear / 0 either), how to confirm, colour]
+nextExpected(int d, int swp, float o, float h, float l, float c) =>
+    string ph  = ""
+    int    dir = 0
+    string how = ""
+    color  col = color.gray
+    if d == 0
+        ph  := "MANIPULATION"
+        how := "watch a sweep of " + fmt(h) + " or " + fmt(l) + ", then price coming back inside"
+        col := manCol
+    else if d == 1
+        ph  := "ABSORPTION → DISTRIBUTION"
+        dir := swp > 0 ? -1 : swp < 0 ? 1 : (c >= o ? -1 : 1)
+        how := (dir > 0 ? "low was swept (fake move down): confirm with a break above " + fmt(h) : "high was swept (fake move up): confirm with a break below " + fmt(l))
+        col := absCol
+    else if d == 2
+        upW = h - math.max(o, c)
+        dnW = math.min(o, c) - l
+        ph  := "DISTRIBUTION"
+        dir := dnW >= upW ? 1 : -1
+        col := dir > 0 ? disBull : disBear
+        how := (dir > 0 ? "selling was absorbed (lower wick): confirm with a break above " + fmt(h) : "buying was absorbed (upper wick): confirm with a break below " + fmt(l))
+    else
+        ph  := "CONTINUATION, then ACCUMULATION"
+        dir := c >= o ? 1 : -1
+        how := "trend " + (dir > 0 ? "up" : "down") + "; the next quiet range starts a new cycle"
+        col := accCol
+    [ph, dir, how, col]
+
+dirTxt(int dir) => dir > 0 ? " ▲ BULL" : dir < 0 ? " ▼ BEAR" : " ↕ either way"
+
+// The latest session = the one that started most recently
+latestT0 = nyOnly ? nz(n0) : math.max(nz(a0), nz(l0), nz(n0))
+latestName = latestT0 == nz(n0) ? "NEW YORK" : latestT0 == nz(l0) ? "LONDON" : "ASIA"
+ld  = latestT0 == nz(n0) ? dominant(nAcc, nMan, nAb, nDis) : latestT0 == nz(l0) ? dominant(lAcc, lMan, lAb, lDis) : dominant(aAcc, aMan, aAb, aDis)
+lsw = latestT0 == nz(n0) ? nSwp : latestT0 == nz(l0) ? lSwp : aSwp
+lo_ = latestT0 == nz(n0) ? no : latestT0 == nz(l0) ? lo : ao
+lh_ = latestT0 == nz(n0) ? nh : latestT0 == nz(l0) ? lh : ah
+ll_ = latestT0 == nz(n0) ? nl : latestT0 == nz(l0) ? ll : al
+lc_ = latestT0 == nz(n0) ? nc : latestT0 == nz(l0) ? lc : ac
+lA_ = latestT0 == nz(n0) ? nAcc : latestT0 == nz(l0) ? lAcc : aAcc
+lM_ = latestT0 == nz(n0) ? nMan : latestT0 == nz(l0) ? lMan : aMan
+lB_ = latestT0 == nz(n0) ? nAb  : latestT0 == nz(l0) ? lAb  : aAb
+lD_ = latestT0 == nz(n0) ? nDis : latestT0 == nz(l0) ? lDis : aDis
+[nxPh, nxDir, nxHow, nxCol] = nextExpected(ld, lsw, lo_, lh_, ll_, lc_)
+nextLine = "NEXT ▸ " + nxPh + dirTxt(nxDir)
+
+// ─── Drawing ──────────────────────────────────────────────────────────────────
+line_(string tag, int x, bool isDom) => (isDom ? "► " : "   ") + p(x) + " " + tag
+
+drawSess(string name, bool show, int t0, int t1, float o, float h, float l, float c, float acc, float man, float ab, float dis, bool live) =>
+    var box   bx   = na
+    var label lb   = na
+    var int   last = na
+    if show and not na(t0) and not na(h)
+        bull = c >= o
+        d    = dominant(acc, man, ab, dis)
+        pc   = phaseColor(d, bull)
+        [vA, vM, vB, vD] = dispVals(acc, man, ab, dis)
+        vDom = d == 0 ? vA : d == 1 ? vM : d == 2 ? vB : vD
+        isLatest = t0 == latestT0
+        head = name + (bull ? "  ▲ BULL" : "  ▼ BEAR") + (live ? "  (live)" : "")
+        body = lblMode == "Dominant only" ? "\n" + p(vDom) + " " + phaseVerb(d) : "\n" + line_("Accumulated", vA, d == 0) + "\n" + line_("Manipulated", vM, d == 1) + "\n" + line_("Absorbed", vB, d == 2) + "\n" + line_("Distributed", vD, d == 3)
+        txt  = head + (live ? "\nNow: " + nowTxt(nowDir) : "") + body + (isLatest and showNext ? "\n" + nextLine : "")
+        right = math.max(nz(t1, t0), t0 + 1)
+        midX  = int(t0 + (right - t0) / 2)
+        if t0 != last
+            last := t0
+            bx := box.new(t0, h, right, l, xloc = xloc.bar_time, border_color = pc, border_width = 2, bgcolor = bull ? bullCol : bearCol)
+            if lblMode != "Off"
+                lb := label.new(midX, h, txt, xloc = xloc.bar_time, style = label.style_label_down, color = color.new(pc, 15), textcolor = color.white, size = lblSize, textalign = text.align_left)
+        else
+            bx.set_lefttop(t0, h)
+            bx.set_rightbottom(right, l)
+            bx.set_border_color(pc)
+            bx.set_bgcolor(bull ? bullCol : bearCol)
+            if not na(lb)
+                lb.set_xy(midX, h)
+                lb.set_text(txt)
+                lb.set_color(color.new(pc, 15))
+        // Alert when a session closes
+        if live[1] and not live
+            alert(name + " closed " + (bull ? "BULL" : "BEAR") + " · " + phaseName(d) + " " + p(vDom) + "  | Acc " + p(vA) + " Man " + p(vM) + " Abs " + p(vB) + " Dis " + p(vD) + "  | " + nextLine + ": " + nxHow, alert.freq_once_per_bar)
+
+drawSess("ASIA",     showA and not nyOnly, a0, a1, ao, ah, al, ac, aAcc, aMan, aAb, aDis, aLive)
+drawSess("LONDON",   showL and not nyOnly, l0, l1, lo, lh, ll, lc, lAcc, lMan, lAb, lDis, lLive)
+drawSess("NEW YORK", showN, n0, n1, no, nh, nl, nc, nAcc, nMan, nAb, nDis, nLive)
+
+// ─── ONE TABLE: sessions + timeframes + next + alignment ─────────────────────
+// Rows 1-3  : Asia / London / New York (live session updates, finished ones are final)
+// Rows 4-8  : each timeframe's LAST COMPLETED candle (identical on every chart timeframe)
+// Row 9     : Next expected after the latest session, with the confirm level
+// Row 10    : Alignment of the "Next expected" direction (latest session + timeframe rows)
+rowOff = nyOnly ? 2 : 0   // New York only: drop the Asia and London rows
+var table tb = table.new(mtfPos, 9, 11, bgcolor = color.new(#131722, 5), border_width = 1, border_color = color.new(color.gray, 60))
+
+tfName(string tf) => tf == "D" or tf == "1D" ? "Daily" : tf == "W" or tf == "1W" ? "Weekly" : tf == "M" or tf == "1M" ? "Monthly" : timeframe.in_seconds(tf) >= 3600 ? str.tostring(timeframe.in_seconds(tf) / 3600) + "H" : str.tostring(timeframe.in_seconds(tf) / 60) + "m"
+
+nextShort(string ph, int dir, float h, float l) => ph + dirTxt(dir) + (dir > 0 ? "  above " + fmt(h) : dir < 0 ? "  below " + fmt(l) : "  sweep " + fmt(h) + " / " + fmt(l))
+
+// Score cell: the winning phase is filled with its colour, the rest are plain white text
+scoreCell(int col, int r, int x, bool isDom, color pc) =>
+    table.cell(tb, col, r, p(x), text_color = isDom ? color.white : color.new(color.white, 25), bgcolor = isDom ? color.new(pc, 10) : na, text_size = size.small)
+
+// Draws one row; returns the "Next expected" direction (+1 / -1 / 0)
+uRow(int r0, string name, color nameBg, string status, color statusBg, float acc, float man, float ab, float dis, int swp, float o, float h, float l, float c) =>
+    r = r0 - rowOff
+    int out = 0
+    table.cell(tb, 0, r, name, text_color = color.white, bgcolor = nameBg, text_size = size.small, text_halign = text.align_left)
+    if na(c)
+        table.cell(tb, 1, r, "no data", text_color = color.gray, text_size = size.small)
+        for i = 2 to 8
+            table.cell(tb, i, r, "", text_size = size.small)
+    else
+        d = dominant(acc, man, ab, dis)
+        bull = c >= o
+        [vA, vM, vB, vD] = dispVals(acc, man, ab, dis)
+        vDom = d == 0 ? vA : d == 1 ? vM : d == 2 ? vB : vD
+        [ph, dir, how, col] = nextExpected(d, swp, o, h, l, c)
+        table.cell(tb, 1, r, bull ? "▲ BULL" : "▼ BEAR", text_color = color.white, bgcolor = bull ? color.new(#26a69a, 20) : color.new(#ef5350, 20), text_size = size.small)
+        table.cell(tb, 2, r, status, text_color = color.white, bgcolor = statusBg, text_size = size.small)
+        table.cell(tb, 3, r, phaseName(d) + " " + p(vDom), text_color = color.white, bgcolor = color.new(phaseColor(d, bull), 20), text_size = size.small)
+        scoreCell(4, r, vA, d == 0, accCol)
+        scoreCell(5, r, vM, d == 1, manCol)
+        scoreCell(6, r, vB, d == 2, absCol)
+        scoreCell(7, r, vD, d == 3, bull ? disBull : disBear)
+        table.cell(tb, 8, r, nextShort(ph, dir, h, l), text_color = color.white, bgcolor = color.new(col, 30), text_size = size.small, text_halign = text.align_left)
+        out := dir
+    out
+
+sessStatus(bool live) => live ? nowTxt(nowDir) : "closed"
+sessStatusBg(bool live) => not live ? na : nowDir > 0 ? color.new(#26a69a, 20) : nowDir < 0 ? color.new(#ef5350, 20) : color.new(color.gray, 40)
+offRow(int r0, string name) =>
+    r = r0 - rowOff
+    table.cell(tb, 0, r, name, text_color = color.gray, text_size = size.small, text_halign = text.align_left)
+    table.cell(tb, 1, r, "off", text_color = color.gray, text_size = size.small)
+    0
+
+// Merge the wide rows once
+if barstate.isfirst and showTbl
+    table.merge_cells(tb, 1, 9 - rowOff, 8, 9 - rowOff)
+    table.merge_cells(tb, 1, 10 - rowOff, 8, 10 - rowOff)
+
+// Redraw on EVERY bar so the table also follows Bar Replay step by step.
+if showTbl
+    sessBg = color.new(#2a2e39, 0)
+    tfBg   = color.new(#1e222d, 0)
+    hdr  = array.from(str.format_time(time_close, "dd MMM HH:mm", tzIn), "Bias", "Now", "Phase", "Acc", "Man", "Abs", "Dis", "Next expected")
+    hcol = array.from(color.silver, color.silver, color.silver, color.silver, accCol, manCol, absCol, color.gray, color.silver)
+    for i = 0 to 8
+        table.cell(tb, i, 0, hdr.get(i), text_color = (i >= 4 and i <= 7) ? color.white : color.silver, bgcolor = (i >= 4 and i <= 7) ? color.new(hcol.get(i), 40) : na, text_size = size.small)
+    int dA = 0
+    int dL = 0
+    if not nyOnly
+        dA := uRow(1, "ASIA" + (aLive ? " •" : ""),     sessBg, sessStatus(aLive), sessStatusBg(aLive), aAcc, aMan, aAb, aDis, aSwp, ao, ah, al, ac)
+        dL := uRow(2, "LONDON" + (lLive ? " •" : ""),   sessBg, sessStatus(lLive), sessStatusBg(lLive), lAcc, lMan, lAb, lDis, lSwp, lo, lh, ll, lc)
+    dN = uRow(3, "NEW YORK" + (nLive ? " •" : ""), sessBg, sessStatus(nLive), sessStatusBg(nLive), nAcc, nMan, nAb, nDis, nSwp, no, nh, nl, nc)
+    dLatest = latestT0 == nz(n0) ? dN : latestT0 == nz(l0) ? dL : dA
+    dirs = array.from(dLatest)
+    if showMtf
+        if use1
+            dirs.push(uRow(4, tfName(tf1), tfBg, "last closed", na, m1A, m1M, m1B, m1D, int(m1S), m1o, m1h, m1l, m1c))
+        else
+            offRow(4, tfName(tf1))
+        if use2
+            dirs.push(uRow(5, tfName(tf2), tfBg, "last closed", na, m2A, m2M, m2B, m2D, int(m2S), m2o, m2h, m2l, m2c))
+        else
+            offRow(5, tfName(tf2))
+        if use3
+            dirs.push(uRow(6, tfName(tf3), tfBg, "last closed", na, m3A, m3M, m3B, m3D, int(m3S), m3o, m3h, m3l, m3c))
+        else
+            offRow(6, tfName(tf3))
+        if use4
+            dirs.push(uRow(7, tfName(tf4), tfBg, "last closed", na, m4A, m4M, m4B, m4D, int(m4S), m4o, m4h, m4l, m4c))
+        else
+            offRow(7, tfName(tf4))
+        if use5
+            dirs.push(uRow(8, tfName(tf5), tfBg, "last closed", na, m5A, m5M, m5B, m5D, int(m5S), m5o, m5h, m5l, m5c))
+        else
+            offRow(8, tfName(tf5))
+    if showNext
+        table.cell(tb, 0, 9 - rowOff, "NEXT ▸ after " + latestName, text_color = color.white, text_size = size.small, text_halign = text.align_left)
+        table.cell(tb, 1, 9 - rowOff, nxPh + dirTxt(nxDir) + "   —   " + nxHow, text_color = color.white, bgcolor = color.new(nxCol, 20), text_size = size.small, text_halign = text.align_left)
+    int bullN = 0
+    int bearN = 0
+    int eitherN = 0
+    for dv in dirs
+        if dv > 0
+            bullN += 1
+        else if dv < 0
+            bearN += 1
+        else
+            eitherN += 1
+    alignCol = bullN > bearN ? color.new(#26a69a, 20) : bearN > bullN ? color.new(#ef5350, 20) : color.new(color.gray, 40)
+    alignTxt = (bullN > bearN ? "Leaning ▲ BULL" : bearN > bullN ? "Leaning ▼ BEAR" : "Mixed") + "   |   ▲ " + str.tostring(bullN) + " bull · ▼ " + str.tostring(bearN) + " bear · ↕ " + str.tostring(eitherN) + " either   (latest session + timeframe rows)"
+    table.cell(tb, 0, 10 - rowOff, "ALIGNMENT", text_color = color.white, text_size = size.small, text_halign = text.align_left)
+    table.cell(tb, 1, 10 - rowOff, alignTxt, text_color = color.white, bgcolor = alignCol, text_size = size.small, text_halign = text.align_left)
+
+// Values in the Data Window (also used to check that every chart timeframe shows the same numbers)
+plot(m2A * 100, "1H Acc", display = display.data_window)
+plot(m2M * 100, "1H Man", display = display.data_window)
+plot(m2B * 100, "1H Abs", display = display.data_window)
+plot(m2D * 100, "1H Dis", display = display.data_window)
+plot(m3A * 100, "4H Acc", display = display.data_window)
+plot(m3M * 100, "4H Man", display = display.data_window)
+plot(m3B * 100, "4H Abs", display = display.data_window)
+plot(m3D * 100, "4H Dis", display = display.data_window)
+plot(m4A * 100, "D Acc", display = display.data_window)
+plot(m4M * 100, "D Man", display = display.data_window)
+plot(m4B * 100, "D Abs", display = display.data_window)
+plot(m4D * 100, "D Dis", display = display.data_window)
+plot(m5A * 100, "W Acc", display = display.data_window)
+plot(m5M * 100, "W Man", display = display.data_window)
+plot(m5B * 100, "W Abs", display = display.data_window)
+plot(m5D * 100, "W Dis", display = display.data_window)
+plot(m1A * 100, "15m Acc", display = display.data_window)
+plot(m1D * 100, "15m Dis", display = display.data_window)
