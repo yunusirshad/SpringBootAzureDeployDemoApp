@@ -291,8 +291,7 @@
   async function loadBook(sym) {
     bookData.set(sym, { loading: true });
     render();
-    const risk = store.get('riskDollars', '');
-    try { bookData.set(sym, await api(`api/playbook/${encodeURIComponent(sym)}${risk ? '?risk=' + encodeURIComponent(risk) : ''}`)); }
+    try { bookData.set(sym, await api(`api/playbook/${encodeURIComponent(sym)}`)); }
     catch (err) { bookData.set(sym, { error: err.message }); }
     render();
   }
@@ -309,13 +308,20 @@
     const p = d.plan;
     const planHtml = p ? `<div class="bookplan">
         <div><b>Plan: ${esc(p.strategy)}</b> · ${esc(p.how)}</div>
-        <div>Entry <b>${money(p.entry)}</b> · stop <b>${money(p.stop)}</b> (${fix(p.riskPct, 1)}% risk) · target <b>${money(p.target)}</b> · R:R ${fix(p.rr, 1)}${isNum(p.shares) ? ` · <b>${p.shares} shares</b> (${money(p.positionValue)})` : ''}</div>
+        <div>Entry <b>${money(p.entry)}</b> · stop <b>${money(p.stop)}</b> (${fix(p.riskPct, 1)}% away) · target <b>${money(p.target)}</b> · R:R <b>1:${fix(p.rr, 1)}</b></div>
+        ${isNum(p.shares) ? `<div><b>${p.shares} shares</b> (${money(p.positionValue)}) · risking ${money(p.dollarsAtRisk)} to make ${money(p.dollarsToTarget)}${p.sizeNote ? ' · ' + esc(p.sizeNote) : ''}</div>` : ''}
         <div class="meta">Exit: ${esc(p.exit)}. On ${esc(sym)} this strategy won ${p.record.winRate}% of ${p.record.trades} trades, profit factor ${fix(p.record.profitFactor)}.</div></div>`
       : `<p class="plangate off">${esc(d.verdict)}</p>`;
+    const rejected = (d.candidates || []).filter((c) => c !== p && (c.rejected || c.record.verdict !== 'edge'))
+      .map((c) => `<li>${esc(c.strategy)}: entry ${money(c.entry)}, stop ${money(c.stop)}, target ${money(c.target)}, R:R 1:${fix(c.rr, 2)} — ${esc(c.rejected || ('the strategy has ' + c.record.verdict + ' on this stock'))}</li>`).join('');
+    const pr = d.profile || {};
     return `<div class="chainpanel">
       <div class="chainhead"><b>${esc(sym)} playbook</b><span class="meta">every strategy backtested on ${esc(sym)}'s own history · ${esc(etStamp(d.generatedAt))}</span>
-        <label class="meta">Risk per trade $<input type="number" min="1" step="1" class="bookrisk" data-book-risk="${esc(sym)}" value="${esc(store.get('riskDollars', ''))}" style="width:80px"></label></div>
+        <span class="meta">Account $<input type="number" min="1" step="100" class="bookrisk" data-profile="account" data-sym="${esc(sym)}" value="${pr.account ?? ''}" style="width:80px">
+          · risk <input type="number" min="0.1" max="10" step="0.1" class="bookrisk" data-profile="riskPct" data-sym="${esc(sym)}" value="${pr.riskPct ?? ''}" style="width:56px">%
+          (${money((pr.account || 0) * (pr.riskPct || 0) / 100)}) · min R:R 1:<input type="number" min="1" max="10" step="0.5" class="bookrisk" data-profile="minRR" data-sym="${esc(sym)}" value="${pr.minRR ?? ''}" style="width:52px"></span></div>
       ${planHtml}
+      ${rejected ? `<div class="meta">Active but not taken:<ul class="planwatch">${rejected}</ul></div>` : ''}
       <div class="meta">${(d.context || []).map(esc).join(' · ')}</div>
       <div class="tablewrap"><table class="grid"><thead><tr><th>Strategy</th><th class="num">Trades</th><th class="num">Win</th><th class="num">PF</th><th class="num">Avg</th><th class="num">Total</th><th>Verdict</th><th>Now</th></tr></thead><tbody>${rows}</tbody></table></div>
       <p class="meta">Edge = at least 8 trades, profit factor 1.3+ and a positive average trade on this stock. The plan uses the best strategy that has an edge and is active now; otherwise it says no trade. Past results do not promise future ones.</p>
@@ -367,11 +373,14 @@
     </div>`;
   }
 
-  document.addEventListener('change', (e) => {
-    const r = e.target.closest('[data-book-risk]');
+  document.addEventListener('change', async (e) => {
+    const r = e.target.closest('[data-profile]');
     if (!r) return;
-    store.set('riskDollars', r.value);
-    loadBook(r.dataset.bookRisk);
+    const panel = r.closest('.chainpanel');
+    const body = {};
+    panel.querySelectorAll('[data-profile]').forEach((x) => { body[x.dataset.profile] = Number(x.value); });
+    try { await api('api/profile', { method: 'PUT', body: JSON.stringify(body) }); toast('Profile saved'); loadBook(r.dataset.sym); }
+    catch (err) { toast(err.message); }
   });
 
   const signedBig = (v) => !isNum(v) ? '—' : (v < 0 ? '−' : '+') + big(Math.abs(v));
@@ -1197,7 +1206,7 @@
           <b>session phase</b> 20 (the latest pre-market or New York session from the Sessions indicator: Bull Distribution 20, Bull Absorption 16, Bear Absorption 12, Bull Manipulation 10, Bull Accumulation 8, times its percent);
           <b>long score</b> 30 (the long score × 0.3).
           Names are grouped by signal first (Buy now, Ready to buy, Ready to sell, Sell now, Hold, Wait), then by the setup score. A Wait shows the expected buy (the breakout level), its stop (today's low or the put wall, at least ¼ ATR under) and target (buy + 1 ATR, capped at the call wall). The <b>super stock</b> is the best Buy now name (or Ready to buy when there is no Buy now). It stays first whatever the sort.</li>
-        <li><b>Playbook</b> (button on each Core row): every strategy backtested on that stock's own history — the daily Breakout (the Core Buy now idea: a buy stop over the prior day high in an uptrend, stop at the prior low or 1 ATR, 1.5R target, up to 5 days; 2 years), PV Confirm (2 years), the trading plan bot as a swing and a day trade (60 days of 5-minute data) and Quantum Shift long only (60 days of hourly bars) — each labelled edge (8+ trades, profit factor 1.3+, positive average), weak, no edge or too few trades, with what each says now. The plan comes from the best strategy that has an edge on the stock and is active now, with entry, stop, target, R:R and the share count for your risk per trade; otherwise it says no trade.</li>
+        <li><b>Playbook</b> (button on each Core row): every strategy backtested on that stock's own history — the daily Breakout (the Core Buy now idea: a buy stop over the prior day high in an uptrend, stop at the prior low or 1 ATR, 1.5R target, up to 5 days; 2 years), PV Confirm (2 years), the trading plan bot as a swing and a day trade (60 days of 5-minute data) and Quantum Shift long only (60 days of hourly bars) — each labelled edge (8+ trades, profit factor 1.3+, positive average), weak, no edge or too few trades, with what each says now. The plan comes from the best strategy that has an edge on the stock and is active now, with entry, stop, target, R:R and the share count from your profile (account size × risk %, capped at the account size, no margin). Plans under your minimum R:R (1:2 by default) are rejected, and the Breakout is backtested with a target at that minimum. Otherwise it says no trade.</li>
         <li><b>Trading plan bot</b> (card on the Screen tab): a top-down, long-only day-trade plan. Daily: direction (Strong Uptrend or Early Bullish Reversal). Daily/1h: liquidity above (prior day high, 20-hour high, nearest bearish FVG or order block) is the target, and a trade is skipped when it is closer than 2R. 1h: trend (close above a rising 20 EMA). 15m/1h: a retest of an unfilled bullish FVG or order block; a pullback into the Fibonacci golden zone (0.5–0.618 of a 1h swing low to swing high of 2 ATR or more, dead on a close below 0.786, stop under 0.786); a reversal (a 15m sweep of the recent or prior-day low that closes back above it, then a close above that candle's high); or a 15m breakout over the prior day high on 1.5× volume. 5m: a bullish close above its 20 EMA and the previous high confirms; entry at the next open, stop under the zone or the 5m swing low (3% at most). Management: held as a swing trade up to the set number of trading days (5 by default; 1 = day trade); once up 1R the stop moves to the entry (breakeven). Exits: the stop, the target, or 3:45 PM on the last day of the hold. Setups are graded A/B/C by confluence (including the Fibonacci golden zone) and backtested on every screened stock over 60 days of 5-minute data; BUY NOW goes out only for a grade with the minimum win rate (60%) over the minimum trades (15). It scans every 15 minutes from 9:45 AM to 3:45 PM ET and alerts here and, when set up, on Telegram or ntfy. <b>FVG</b>: three candles where the first's high is below the third's low (bullish). <b>Order block</b>: the last down candle before a move that closes 1 ATR above its high (bullish). A zone is gone once a candle closes through it.</li>
         <li><b>Buy now / Sell now alerts</b>: during market hours (9:30 AM to 4:00 PM ET on trading days), when a Core stock's signal is Buy now or Sell now the app alerts once per stock, per signal, per day: a pop-up and browser notification here, and Telegram or ntfy on your phone when set up. A Buy now alert carries the stop and target from the setup; a Sell now alert says why. They are listed on the Alerts tab.</li>
         <li><b>Signals</b>. Sell signals are about leaving a long and are checked first.
@@ -1235,7 +1244,7 @@
         <li><code>GET /api/prices</code>: the light payload the page polls every 10 seconds.</li>
         <li><code>GET /api/chain/{ticker}?expiry=ALL</code>: one stock's option chain by strike (call and put open interest, IV, net gamma) with its walls and King; the <b>Chain</b> button on each Core row shows it.</li>
         <li><code>GET /api/chains/status</code>: why option chains are or are not loading (source, Cboe and Yahoo errors, last run's counts). <code>POST /api/chains/refresh</code> reads them all again now.</li>
-        <li><code>GET /api/playbook/{ticker}?risk=100</code>: the stock's playbook (strategies backtested on it, what each says now, and the plan with the share count for $100 of risk).</li>
+        <li><code>GET /api/playbook/{ticker}</code>: the stock's playbook (strategies backtested on it, what each says now, and the plan sized from your profile; <code>?risk=</code> overrides the dollars at risk). <code>GET|PUT /api/profile</code>: account size, risk % per trade and minimum R:R.</li>
         <li><code>GET /api/plan</code>: the trading plan bot (open trades, today's signals, setting up, backtest by setup and grade, settings). <code>POST /api/plan/scan</code>, <code>POST /api/plan/backtest</code>, <code>PUT /api/plan/settings</code>, <code>GET /api/plan/alerts</code>.</li>
         <li><code>GET /api/signal-alerts</code>: the Buy now and Sell now alerts, newest first.</li>
         <li><code>GET /api/bias</code>: today's market-bias call (or a preview), the last calls with SPY's result and the accuracy; <code>?refresh=true</code> reads it again now. <code>POST /api/bias/test</code> sends a test phone alert.</li>

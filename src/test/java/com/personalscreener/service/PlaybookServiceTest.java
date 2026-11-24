@@ -33,4 +33,20 @@ class PlaybookServiceTest {
         assertEquals(2.0, p.get("rr"));
         assertEquals(2000.0, p.get("positionValue"));
     }
+
+    @Test
+    void positionIsCappedByTheAccount() {
+        // $180 risk with a $0.05 stop would be 3,600 shares of a $10 stock = $36,000: capped at $9,000
+        var p = PlaybookService.plan("Breakout", java.util.Map.of(), "buy", 10.0, 9.95, 10.1, "x", 180.0, 9000);
+        assertEquals(900, p.get("shares"));
+        assertEquals(9000.0, p.get("positionValue"));
+        assertNotNull(p.get("sizeNote"));
+    }
+
+    @Test
+    void profileRiskDollars() {
+        var pr = new PlaybookService.Profile();
+        assertEquals(180.0, pr.riskDollars(), 1e-9);
+        assertEquals(2.0, pr.minRR, 1e-9);
+    }
 }

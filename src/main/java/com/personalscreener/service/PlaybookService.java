@@ -23,6 +23,34 @@ import java.util.*;
 @Service
 public class PlaybookService {
 
+    /** The trader's account and risk rules, saved to profile.json. */
+    public static class Profile {
+        public double account = 9000;
+        public double riskPct = 2;
+        public double minRR = 2;
+
+        public double riskDollars() { return account * riskPct / 100; }
+
+        public void validate() {
+            if (!(account > 0)) throw new IllegalArgumentException("Account size must be above 0");
+            if (!(riskPct > 0 && riskPct <= 10)) throw new IllegalArgumentException("Risk must be above 0% and at most 10%");
+            if (!(minRR >= 1 && minRR <= 10)) throw new IllegalArgumentException("Minimum R:R must be 1 to 10");
+        }
+    }
+
+    private static final String PROFILE = "profile.json";
+    private volatile Profile profile;
+    private final com.personalscreener.store.JsonStore store;
+
+    public Profile profile() { return profile; }
+
+    public Profile saveProfile(Profile p) {
+        p.validate();
+        profile = p;
+        store.write(PROFILE, p);
+        return p;
+    }
+
     static final int MIN_TRADES = 8;
     static final double EDGE_PF = 1.3;
 
@@ -32,7 +60,10 @@ public class PlaybookService {
     private final PlanService plan;
     private final MarketClock clock;
 
-    public PlaybookService(YahooClient yahoo, ScreenService screen, PvService pv, PlanService plan, MarketClock clock) {
+    public PlaybookService(YahooClient yahoo, ScreenService screen, PvService pv, PlanService plan, MarketClock clock,
+                           com.personalscreener.store.JsonStore store) {
+        this.store = store;
+        this.profile = store.read(PROFILE, new com.fasterxml.jackson.core.type.TypeReference<Profile>() {}, new Profile());
         this.yahoo = yahoo;
         this.screen = screen;
         this.pv = pv;
@@ -40,7 +71,11 @@ public class PlaybookService {
         this.clock = clock;
     }
 
-    public Map<String, Object> build(String symbol, Double riskDollars) throws Exception {
+    public Map<String, Object> build(String symbol, Double riskOverride) throws Exception {
+        Profile pr = profile;
+        double minRR = pr.minRR;
+        Double riskDollars = riskOverride != null ? riskOverride : pr.riskDollars();
+        double account = pr.account;
         ZonedDateTime now = clock.now();
         LocalDate today = now.toLocalDate();
         StockRow row = screen.snapshot().rows.stream().filter(r -> r.symbol.equals(symbol)).findFirst().orElse(null);
@@ -58,8 +93,9 @@ public class PlaybookService {
         double atrD = Indicators.atr(done, 14);
 
         // 1. daily breakout (the Core Buy now idea)
-        List<DailyBreakout.Trade> bo = DailyBreakout.backtest(done, 1.5, 5, 5);
-        Map<String, Object> boS = summary("Breakout (Core Buy now)", "2 years of daily bars: buy over the prior day high in an uptrend, stop at the prior low or 1 ATR, target 1.5R, up to 5 days",
+        double boR = Math.max(1.5, minRR);
+        List<DailyBreakout.Trade> bo = DailyBreakout.backtest(done, boR, 5, 5);
+        Map<String, Object> boS = summary("Breakout (Core Buy now)", String.format("2 years of daily bars: buy over the prior day high in an uptrend, stop at the prior low or 1 ATR, target %.1fR, up to 5 days", boR),
                 bo.stream().map(DailyBreakout.Trade::returnPct).toList(), bo.stream().map(DailyBreakout.Trade::rMultiple).toList(),
                 bo.stream().map(t -> t.entryDate() + " → " + t.exitReason() + String.format(" %+.1f%%", t.returnPct())).toList());
         String sig = row == null ? null : row.signal;
@@ -73,7 +109,7 @@ public class PlaybookService {
         strategies.add(boS);
         if (boLive && boStop < boEntry) {
             candidates.add(plan("Breakout (Core Buy now)", boS, price >= boTrigger ? "Buy now (through the trigger)" : String.format("Buy stop at %.2f (over the breakout level)", boEntry),
-                    boEntry, boStop, boEntry + 1.5 * (boEntry - boStop), "1.5R; hold up to 5 trading days, breakeven after +1R", riskDollars));
+                    boEntry, boStop, boEntry + boR * (boEntry - boStop), String.format("%.1fR; hold up to 5 trading days, breakeven after +1R", boR), riskDollars, account));
         }
 
         // 2. PV Confirm
@@ -96,12 +132,13 @@ public class PlaybookService {
             String how;
             if ("BUY".equals(pvStatus)) { e = pvNow.entry(); st = pvNow.stop(); tg = pvNow.entry(); how = "Buy at the next open (estimated from the close)"; }
             else { var ex = pvNow.expected(); e = ex.buy(); st = ex.stop(); tg = ex.target(); how = String.format("Wait for a close at or under %.2f (RSI(2) under %.0f), then buy the next open", ex.buy(), ps.rsiBuyBelow); }
-            candidates.add(plan("PV Confirm", pvS, how, e, st, Math.max(tg, e + 0.01), "the first close above the entry (target shown is the 5-day average); exit by bar " + ps.maxBars, riskDollars));
+            candidates.add(plan("PV Confirm", pvS, how, e, st, Math.max(tg, e + 0.01), "the first close above the entry (target shown is the 5-day average); exit by bar " + ps.maxBars, riskDollars, account));
         }
 
         // 3. trading plan bot (swing and day)
         TradePlan.Bars tb = new TradePlan.Bars(daily, h1, m15, m5, spy15);
-        TradePlan.Settings ts = plan.settings();
+        TradePlan.Settings ts = copy(plan.settings(), plan.settings().holdDays);
+        ts.minRR = Math.max(ts.minRR, minRR);
         for (int hold : new int[]{ts.holdDays, 1}) {
             if (hold == 1 && ts.holdDays == 1) continue;
             TradePlan.Settings s2 = copy(ts, hold);
@@ -119,7 +156,7 @@ public class PlaybookService {
             if (look.setup() != null) {
                 var st = look.setup();
                 candidates.add(plan(name, tS, "Buy now (5m confirmation in)", price, price - (st.entry() - st.stop()), price + (st.target() - st.entry()),
-                        st.targetSource() + (hold == 1 ? "; out by 3:45 PM" : "; hold up to " + hold + " days") + ", breakeven after +1R", riskDollars));
+                        st.targetSource() + (hold == 1 ? "; out by 3:45 PM" : "; hold up to " + hold + " days") + ", breakeven after +1R", riskDollars, account));
             }
         }
 
@@ -142,14 +179,21 @@ public class PlaybookService {
             strategies.add(qS);
             if (qsLive) {
                 double a = ser.atr()[last];
-                candidates.add(plan("Quantum Shift (1h, long only)", qS, "Buy at the next hourly open", price, price - 2 * a, price + 3 * a,
-                        "no fixed target: trail 2.5 ATR(1h) off the best close; exit on a shift down or after 35 hours (3 ATR shown as a guide)", riskDollars));
+                candidates.add(plan("Quantum Shift (1h, long only)", qS, "Buy at the next hourly open", price, price - 2 * a, price + 2 * a * minRR,
+                        String.format("trail 2.5 ATR(1h) off the best close; exit on a shift down or after 35 hours (target shown at %.1fR as a guide)", minRR), riskDollars, account));
             }
         }
 
         // the plan: the best active strategy with an edge on this stock
         candidates.sort(Comparator.comparingDouble((Map<String, Object> c) -> -num(((Map<?, ?>) c.get("record")).get("profitFactor"))));
-        Map<String, Object> best = candidates.stream().filter(c -> "edge".equals(((Map<?, ?>) c.get("record")).get("verdict"))).findFirst().orElse(null);
+        for (Map<String, Object> c : candidates) {
+            Object rr = c.get("rr");
+            boolean ok = rr instanceof Number n && n.doubleValue() >= minRR - 1e-9;
+            c.put("meetsRR", ok);
+            if (!ok) c.put("rejected", String.format("R:R %s is under your 1:%.1f minimum", rr == null ? "n/a" : String.format("%.2f", ((Number) rr).doubleValue()), minRR));
+        }
+        Map<String, Object> best = candidates.stream().filter(c -> "edge".equals(((Map<?, ?>) c.get("record")).get("verdict")) && Boolean.TRUE.equals(c.get("meetsRR")))
+                .findFirst().orElse(null);
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("symbol", symbol);
         out.put("name", row == null ? null : row.name);
@@ -161,9 +205,10 @@ public class PlaybookService {
         out.put("plan", best);
         out.put("verdict", best != null ? "TRADE"
                 : candidates.isEmpty() ? "NO TRADE: no strategy is active on " + symbol + " right now"
-                : "NO TRADE: the strategies active now have no proven edge on " + symbol + " (" + String.join(", ",
-                candidates.stream().map(c -> c.get("strategy") + " " + ((Map<?, ?>) c.get("record")).get("verdict")).toList()) + ")");
+                : "NO TRADE on " + symbol + ": " + String.join("; ", candidates.stream().map(c -> c.get("strategy") + " is active but "
+                + (!"edge".equals(((Map<?, ?>) c.get("record")).get("verdict")) ? verdictText(String.valueOf(((Map<?, ?>) c.get("record")).get("verdict"))) : c.get("rejected"))).toList()));
         out.put("riskDollars", riskDollars);
+        out.put("profile", pr);
         return out;
     }
 
@@ -199,6 +244,12 @@ public class PlaybookService {
 
     static Map<String, Object> plan(String strategy, Map<String, Object> record, String how, double entry, double stop, double target,
                                     String exit, Double riskDollars) {
+        return plan(strategy, record, how, entry, stop, target, exit, riskDollars, Double.NaN);
+    }
+
+    /** {@code account}: the position never costs more than this (no margin); NaN for no cap. */
+    static Map<String, Object> plan(String strategy, Map<String, Object> record, String how, double entry, double stop, double target,
+                                    String exit, Double riskDollars, double account) {
         Map<String, Object> m = new LinkedHashMap<>();
         double risk = entry - stop;
         m.put("strategy", strategy);
@@ -212,9 +263,14 @@ public class PlaybookService {
         m.put("rr", risk > 0 ? r2((target - entry) / risk) : null);
         m.put("exit", exit);
         if (riskDollars != null && riskDollars > 0 && risk > 0) {
-            int shares = (int) Math.floor(riskDollars / risk);
+            int byRisk = (int) Math.floor(riskDollars / risk);
+            int shares = byRisk;
+            if (!Double.isNaN(account) && account > 0) shares = Math.min(byRisk, (int) Math.floor(account / entry));
             m.put("shares", shares);
             m.put("positionValue", r2(shares * entry));
+            m.put("dollarsAtRisk", r2(shares * risk));
+            m.put("dollarsToTarget", r2(shares * (target - entry)));
+            if (shares < byRisk) m.put("sizeNote", String.format("capped at %d shares by the $%,.0f account (the full risk would need %d)", shares, account, byRisk));
         }
         return m;
     }
@@ -251,6 +307,14 @@ public class PlaybookService {
             case "SELL_NOW" -> "Sell now";
             case "HOLD" -> "Hold";
             default -> "Wait";
+        };
+    }
+
+    private static String verdictText(String v) {
+        return switch (v) {
+            case "weak" -> "its record on this stock is only weak";
+            case "too few trades" -> "it has too few trades on this stock to trust";
+            default -> "it has no edge on this stock";
         };
     }
 

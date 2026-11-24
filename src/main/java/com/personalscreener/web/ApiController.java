@@ -246,6 +246,13 @@ public class ApiController {
         return playbook.build(symbol(ticker), risk);
     }
 
+    /** The trader profile: account size, risk % per trade and minimum R:R (used by the playbook). */
+    @GetMapping("/profile")
+    public PlaybookService.Profile profile() { return playbook.profile(); }
+
+    @PutMapping("/profile")
+    public PlaybookService.Profile saveProfile(@RequestBody PlaybookService.Profile p) { return playbook.saveProfile(p); }
+
     // ---- trading plan bot ----------------------------------------------------------------------
 
     /** The plan bot: open plan trades, today's BUY NOW / SELL NOW, the watch list, the backtest and the settings. */
