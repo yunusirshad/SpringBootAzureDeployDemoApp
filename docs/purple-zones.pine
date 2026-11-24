@@ -20,6 +20,9 @@ showTable  = input.bool(true, "Show the table")
 tablePos   = input.string("Top right", "Table position", options = ["Top right", "Bottom right", "Top left", "Bottom left"])
 drawBack   = input.int(150, "Draw zones back this many bars", minval = 20, maxval = 1000)
 zoneColor  = input.color(color.new(#6d28d9, 0), "Purple")
+tableBg    = input.color(color.new(#1e1b2e, 0), "Table background")
+tableText  = input.color(color.white, "Table text")
+tableSize  = input.string("Normal", "Table text size", options = ["Small", "Normal", "Large"])
 
 // ---- the profile of `n` bars starting `off` bars back, in the current (requested) timeframe --------------------
 profile(int off, int n) =>
@@ -109,7 +112,8 @@ intradayProfiles() =>
 var array<box> drawn = array.new<box>()
 var array<label> tags = array.new<label>()
 pos = tablePos == "Bottom right" ? position.bottom_right : tablePos == "Top left" ? position.top_left : tablePos == "Bottom left" ? position.bottom_left : position.top_right
-var table tbl = table.new(pos, 2, 6, bgcolor = color.new(color.black, 85), border_width = 1)
+var table tbl = table.new(pos, 2, 6, bgcolor = tableBg, frame_color = zoneColor, frame_width = 1, border_color = color.new(color.white, 85), border_width = 1)
+tsz = tableSize == "Small" ? size.small : tableSize == "Large" ? size.large : size.normal
 
 float sLo = na
 float sHi = na
@@ -208,24 +212,24 @@ if barstate.islast
 
     if showTable
         tbl.clear(0, 0, 1, 5)
-        color txt = color.white
         if best >= 0
             string where = close > sHi ? str.tostring((close / sHi - 1) * 100, "#.#") + "% above the zone (support below)"
                          : close < sLo ? str.tostring((1 - close / sLo) * 100, "#.#") + "% below the zone (resistance above)"
                          : "Inside the zone"
-            tbl.cell(0, 0, "Purple zone", text_color = zoneColor, text_size = size.small, bgcolor = color.new(color.white, 85))
-            tbl.cell(1, 0, "×" + str.tostring(sScore) + " timeframes agree", text_color = zoneColor, text_size = size.small, bgcolor = color.new(color.white, 85))
-            tbl.cell(0, 1, "Core", text_color = txt, text_size = size.small)
-            tbl.cell(1, 1, str.tostring(sCoreLo, format.mintick) + " – " + str.tostring(sCoreHi, format.mintick), text_color = txt, text_size = size.small)
-            tbl.cell(0, 2, "Band", text_color = txt, text_size = size.small)
-            tbl.cell(1, 2, str.tostring(sLo, format.mintick) + " – " + str.tostring(sHi, format.mintick), text_color = txt, text_size = size.small)
-            tbl.cell(0, 3, "Timeframes", text_color = txt, text_size = size.small)
-            tbl.cell(1, 3, zWho.get(best), text_color = txt, text_size = size.small)
-            tbl.cell(0, 4, "Price", text_color = txt, text_size = size.small)
-            tbl.cell(1, 4, where, text_color = txt, text_size = size.small)
+            // header: solid purple, white text
+            tbl.cell(0, 0, "Purple zone", text_color = color.white, text_size = tsz, bgcolor = zoneColor, text_halign = text.align_left)
+            tbl.cell(1, 0, "×" + str.tostring(sScore) + " timeframes agree", text_color = color.white, text_size = tsz, bgcolor = zoneColor, text_halign = text.align_left)
+            tbl.cell(0, 1, "Core", text_color = tableText, text_size = tsz, text_halign = text.align_left)
+            tbl.cell(1, 1, str.tostring(sCoreLo, format.mintick) + " – " + str.tostring(sCoreHi, format.mintick), text_color = tableText, text_size = tsz, text_halign = text.align_left)
+            tbl.cell(0, 2, "Band", text_color = tableText, text_size = tsz, text_halign = text.align_left)
+            tbl.cell(1, 2, str.tostring(sLo, format.mintick) + " – " + str.tostring(sHi, format.mintick), text_color = tableText, text_size = tsz, text_halign = text.align_left)
+            tbl.cell(0, 3, "Timeframes", text_color = tableText, text_size = tsz, text_halign = text.align_left)
+            tbl.cell(1, 3, zWho.get(best), text_color = tableText, text_size = tsz, text_halign = text.align_left)
+            tbl.cell(0, 4, "Price", text_color = tableText, text_size = tsz, text_halign = text.align_left)
+            tbl.cell(1, 4, where, text_color = close > sHi ? color.new(#34d399, 0) : close < sLo ? color.new(#f87171, 0) : color.new(#fbbf24, 0), text_size = tsz, text_halign = text.align_left)
         else
-            tbl.cell(0, 0, "Purple zone", text_color = zoneColor, text_size = size.small)
-            tbl.cell(1, 0, "None: fewer than " + str.tostring(minScore) + " timeframes agree anywhere", text_color = txt, text_size = size.small)
+            tbl.cell(0, 0, "Purple zone", text_color = color.white, text_size = tsz, bgcolor = zoneColor, text_halign = text.align_left)
+            tbl.cell(1, 0, "None: fewer than " + str.tostring(minScore) + " timeframes agree", text_color = tableText, text_size = tsz, text_halign = text.align_left)
 
 // hidden outputs (data window / alerts): the purple zone
 plot(sCoreLo, "Purple zone core low", color = zoneColor, display = display.data_window)
