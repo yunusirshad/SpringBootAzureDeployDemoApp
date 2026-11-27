@@ -1,0 +1,138 @@
+//@version=6
+indicator("GEX Walls + CVD Absorption", shorttitle = "Walls + CVD", overlay = false, max_labels_count = 200, max_lines_count = 10)
+// GEX says where to look, CVD says who is winning there.
+//   CALL WALL = usually the ceiling, PUT WALL = usually the floor, but a wall only holds if someone defends it.
+//   TradingView has no options data: type the walls in from the screener's GEX levels (0 = off).
+//   CVD = market buys - market sells. Estimated from lower-timeframe candles inside each bar (volume of a green
+//   1-minute candle counts as buying, of a red one as selling); resets each day on intraday charts. Drawn in this pane.
+// The fight over the last N candles (net flow = buys - sells as a share of all volume):
+//   CVD up, price up      = BUYERS WIN          CVD down, price down = SELLERS WIN
+//   CVD up, price stuck   = BUYERS ABSORBED (trap)   CVD down, price holds = SELLERS ABSORBED
+// At the PUT WALL:  CVD dumping, price won't drop -> A SETUP (sellers absorbed, floor defended)
+//                   CVD dumping, price follows    -> NOT DEFENDED, don't catch it
+//                   CVD climbing, price stuck     -> TRAP, buyers absorbed, stay out
+// At the CALL WALL: CVD climbing, price stuck     -> CEILING HOLDS (buyers absorbed), no long here
+//                   CVD climbing, price breaks up -> WALL BREAKING, buyers win
+// Labels, wall lines and the table are drawn on the price chart.
+
+grpW = "GEX walls (copy from the screener's GEX levels)"
+callWall = input.float(0, "Call wall (ceiling), 0 = off", minval = 0, step = 0.01, group = grpW)
+putWall  = input.float(0, "Put wall (floor), 0 = off", minval = 0, step = 0.01, group = grpW)
+nearPct  = input.float(1.0, "At the wall = within (% of price)", minval = 0.05, step = 0.05, group = grpW)
+
+grpC = "CVD read"
+ltfIn    = input.timeframe("", "Delta from candles of (empty = auto: 1m intraday)", group = grpC)
+look     = input.int(10, "Read the fight over the last N candles", minval = 2, maxval = 100, group = grpC)
+flowThr  = input.float(20, "CVD climbing / dumping when net flow is at least (%)", minval = 5, maxval = 90, group = grpC)
+stuckPct = input.float(0.3, "Price stuck = moved less than (%)", minval = 0.01, step = 0.05, group = grpC)
+followPct = input.float(0.6, "Price follows = moved at least (%)", minval = 0.05, step = 0.05, group = grpC)
+resetDay = input.bool(true, "Reset CVD each day (intraday charts)", group = grpC)
+
+grpS = "Display"
+showMarks = input.bool(true, "Mark A setups, traps and undefended walls on the chart", group = grpS)
+showTbl   = input.bool(true, "Show the table", group = grpS)
+colBuy  = input.color(color.new(#089981, 0), "Buyers", group = grpS)
+colSell = input.color(color.new(#f23645, 0), "Sellers", group = grpS)
+colWarn = input.color(color.new(#f2c14e, 0), "Absorbed / trap", group = grpS)
+
+// ───── Delta per candle from lower-timeframe candles ─────
+sec = timeframe.in_seconds()
+ltf = ltfIn != "" ? ltfIn : sec <= 3600 ? "1" : sec <= 14400 ? "5" : "60"
+[lo, lc, lv] = request.security_lower_tf(syminfo.tickerid, ltf, [open, close, volume])
+float delta = 0.0
+float tot = 0.0
+if not na(lo) and lo.size() > 0
+    for i = 0 to lo.size() - 1
+        float vol = nz(lv.get(i))
+        delta += lc.get(i) > lo.get(i) ? vol : lc.get(i) < lo.get(i) ? -vol : 0.0
+        tot += vol
+else
+    float vol = nz(volume)
+    delta := close > open ? vol : close < open ? -vol : 0.0
+    tot := vol
+
+var float cvd = 0.0
+if resetDay and timeframe.isintraday and timeframe.change("D")
+    cvd := 0.0
+cvd += delta
+
+// ───── The fight over the last N candles ─────
+float sumTot = math.sum(tot, look)
+float sumDelta = math.sum(delta, look)
+float flow = sumTot > 0 ? sumDelta / sumTot * 100 : 0.0   // net flow %
+float pChg = (close / close[look] - 1) * 100                                                    // price change %
+bool cvdUp = flow >= flowThr
+bool cvdDn = flow <= -flowThr
+bool pStuck = math.abs(pChg) < stuckPct
+bool pUp = pChg >= followPct
+bool pDn = pChg <= -followPct
+
+string fight = cvdUp and pUp ? "BUYERS WIN" : cvdDn and pDn ? "SELLERS WIN" : cvdUp and pChg < stuckPct ? "BUYERS ABSORBED" : cvdDn and pChg > -stuckPct ? "SELLERS ABSORBED" : "NO CLEAR FIGHT"
+
+// ───── At the walls ─────
+float lowN = ta.lowest(low, look)
+float highN = ta.highest(high, look)
+bool hasPut = putWall > 0
+bool hasCall = callWall > 0
+bool atPut = hasPut and (math.abs(close / putWall - 1) * 100 <= nearPct or (lowN <= putWall * (1 + nearPct / 100) and close >= putWall * (1 - nearPct / 100)))
+bool atCall = hasCall and (math.abs(close / callWall - 1) * 100 <= nearPct or (highN >= callWall * (1 - nearPct / 100) and close <= callWall * (1 + nearPct / 100)))
+
+bool aSetup   = atPut and cvdDn and pChg > -stuckPct and close >= putWall * (1 - nearPct / 200)
+bool putFails = atPut and cvdDn and pDn
+bool putTrap  = atPut and cvdUp and pStuck
+bool ceilHold = atCall and cvdUp and pChg < stuckPct and close <= callWall * (1 + nearPct / 200)
+bool callBrk  = atCall and cvdUp and pUp and close > callWall
+bool trap     = putTrap or (not atPut and not atCall and cvdUp and pStuck)
+
+string verdict = aSetup ? "A SETUP — sellers absorbed at the put wall (floor defended)" : putFails ? "PUT WALL NOT DEFENDED — don't catch it" : putTrap ? "TRAP — buyers absorbed at the put wall, stay out" : callBrk ? "CALL WALL BREAKING — buyers win" : ceilHold ? "CEILING HOLDS — buyers absorbed at the call wall, no long here" : atPut ? "At the put wall — wait for the CVD read" : atCall ? "At the call wall — wait for the CVD read" : trap ? "BUYERS ABSORBED — trap, stay out" : fight == "BUYERS WIN" ? "Buyers win (away from the walls)" : fight == "SELLERS WIN" ? "Sellers win (away from the walls)" : "Away from the walls — nothing to do"
+color vCol = aSetup or callBrk ? colBuy : putFails ? colSell : putTrap or ceilHold or trap ? colWarn : color.gray
+
+// ───── CVD pane ─────
+plot(cvd, "CVD", color = delta >= 0 ? colBuy : colSell, linewidth = 2, style = plot.style_line)
+hline(0, "Zero", color = color.new(color.gray, 60))
+
+// ───── On the price chart ─────
+plotshape(showMarks and aSetup and not aSetup[1], "A setup", shape.labelup, location.belowbar, colBuy, text = "A", textcolor = color.white, size = size.small, force_overlay = true)
+plotshape(showMarks and putFails and not putFails[1], "Put wall not defended", shape.xcross, location.belowbar, colSell, size = size.small, force_overlay = true)
+plotshape(showMarks and trap and not trap[1], "Trap", shape.labeldown, location.abovebar, colWarn, text = "TRAP", textcolor = color.black, size = size.tiny, force_overlay = true)
+plotshape(showMarks and ceilHold and not ceilHold[1], "Ceiling holds", shape.labeldown, location.abovebar, colSell, text = "CEILING", textcolor = color.white, size = size.tiny, force_overlay = true)
+plotshape(showMarks and callBrk and not callBrk[1], "Call wall breaking", shape.labelup, location.belowbar, colBuy, text = "BREAK", textcolor = color.white, size = size.tiny, force_overlay = true)
+
+var line lCall = na
+var line lPut = na
+var label tCall = na
+var label tPut = na
+var table tb = table.new(position.top_right, 2, 7, bgcolor = color.new(#0b0e14, 0), border_width = 1, border_color = color.new(color.gray, 75), force_overlay = true)
+f(float v) => str.tostring(v, format.mintick)
+sgn(float v, string d) => (v >= 0 ? "+" : "") + str.tostring(v, d)
+
+if barstate.islast
+    line.delete(lCall), line.delete(lPut), label.delete(tCall), label.delete(tPut)
+    if hasCall
+        lCall := line.new(bar_index - 1, callWall, bar_index, callWall, extend = extend.both, color = colSell, width = 2, force_overlay = true)
+        tCall := label.new(bar_index + 2, callWall, "CALL WALL " + f(callWall) + "  (ceiling)", style = label.style_label_left, color = color.new(#0b0e14, 0), textcolor = colSell, size = size.normal, text_formatting = text.format_bold, force_overlay = true)
+    if hasPut
+        lPut := line.new(bar_index - 1, putWall, bar_index, putWall, extend = extend.both, color = colBuy, width = 2, force_overlay = true)
+        tPut := label.new(bar_index + 2, putWall, "PUT WALL " + f(putWall) + "  (floor)", style = label.style_label_left, color = color.new(#0b0e14, 0), textcolor = colBuy, size = size.normal, text_formatting = text.format_bold, force_overlay = true)
+    if showTbl
+        table.cell(tb, 0, 0, "VERDICT", text_color = color.white, bgcolor = color.new(vCol, 30), text_size = size.small, text_formatting = text.format_bold)
+        table.cell(tb, 1, 0, verdict, text_color = color.white, bgcolor = color.new(vCol, 30), text_size = size.normal, text_formatting = text.format_bold)
+        table.cell(tb, 0, 1, "The fight", text_color = color.silver, text_size = size.small)
+        table.cell(tb, 1, 1, fight, text_color = fight == "BUYERS WIN" ? colBuy : fight == "SELLERS WIN" ? colSell : fight == "NO CLEAR FIGHT" ? color.gray : colWarn, text_size = size.small, text_formatting = text.format_bold)
+        table.cell(tb, 0, 2, "CVD last " + str.tostring(look), text_color = color.silver, text_size = size.small)
+        table.cell(tb, 1, 2, (cvdUp ? "CLIMBING " : cvdDn ? "DUMPING " : "flat ") + sgn(flow, "#") + "% net " + (flow >= 0 ? "buying" : "selling"), text_color = cvdUp ? colBuy : cvdDn ? colSell : color.gray, text_size = size.small, text_formatting = text.format_bold)
+        table.cell(tb, 0, 3, "Price last " + str.tostring(look), text_color = color.silver, text_size = size.small)
+        table.cell(tb, 1, 3, (pUp ? "UP " : pDn ? "DOWN " : pStuck ? "STUCK " : "drifting ") + sgn(pChg, "#.##") + "%", text_color = pUp ? colBuy : pDn ? colSell : color.white, text_size = size.small, text_formatting = text.format_bold)
+        table.cell(tb, 0, 4, "Put wall (floor)", text_color = color.silver, text_size = size.small)
+        table.cell(tb, 1, 4, hasPut ? f(putWall) + "   " + sgn((close / putWall - 1) * 100, "#.##") + "% away" + (atPut ? "  · AT THE WALL" : "") : "not set: type it in from the GEX levels", text_color = color.white, text_size = size.small)
+        table.cell(tb, 0, 5, "Call wall (ceiling)", text_color = color.silver, text_size = size.small)
+        table.cell(tb, 1, 5, hasCall ? f(callWall) + "   " + sgn((close / callWall - 1) * 100, "#.##") + "% away" + (atCall ? "  · AT THE WALL" : "") : "not set: type it in from the GEX levels", text_color = color.white, text_size = size.small)
+        table.cell(tb, 0, 6, "CVD today", text_color = color.silver, text_size = size.small)
+        table.cell(tb, 1, 6, str.tostring(cvd, format.volume) + " (" + (cvd >= 0 ? "net buying" : "net selling") + ")", text_color = cvd >= 0 ? colBuy : colSell, text_size = size.small)
+
+// alerts
+alertcondition(aSetup and not aSetup[1], "A setup at the put wall", "{{ticker}} A SETUP: sellers absorbed at the put wall")
+alertcondition(putFails and not putFails[1], "Put wall not defended", "{{ticker}} put wall not defended: don't catch it")
+alertcondition(trap and not trap[1], "Trap: buyers absorbed", "{{ticker}} TRAP: buyers absorbed, stay out")
+alertcondition(ceilHold and not ceilHold[1], "Ceiling holds at the call wall", "{{ticker}} call wall holding: buyers absorbed")
+alertcondition(callBrk and not callBrk[1], "Call wall breaking", "{{ticker}} call wall breaking: buyers win")
