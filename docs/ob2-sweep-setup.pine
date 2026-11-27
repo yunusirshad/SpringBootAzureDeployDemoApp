@@ -1,0 +1,773 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// Order-block detection adapted from "Volumized Order Blocks | Flux Charts" (© fluxchart).
+
+//@version=6
+indicator("OB2 Sweep Setup", "OB2 Sweep", overlay = true, max_boxes_count = 500, max_labels_count = 500, max_lines_count = 500)
+
+// ════════════════════════════════════════════════════════════════
+// OB2 SWEEP SETUP — liquidity first, then the move.
+//
+//  1. OB1 = an order block (from fixed timeframes) with SOLID / STRONG liquidity
+//     just beyond it (sell-side liquidity BELOW a bullish OB, buy-side ABOVE a
+//     bearish OB). Don't trade OB1 blindly: the chart says WAIT FOR THE SWEEP.
+//  2. SWEEP = price takes that liquidity and comes back:
+//       wick past it and the same candle closes back, or
+//       a candle closes past it and price closes back within N candles.
+//     (Closes past it and stays there for N candles = RUN: setup cancelled.)
+//  3. OB2 = after the sweep, price breaks the last small swing (BOS) within
+//     M candles; the last opposite candle before that move is the NEW order block.
+//  4. Entry = limit at the edge of OB2 (top for a buy, bottom for a sell).
+//     Stop = just beyond the sweep extreme. Target = the nearest opposite
+//     liquidity (or OB). Skipped when the reward:risk is below the minimum.
+//  5. Cancelled if a candle closes through OB2 or price doesn't come back in time.
+//
+// Liquidity = only SOLID (2×+) and STRONG levels: prev day / week / month H-L,
+// New York session H-L, NY premarket H-L (needs extended hours on the chart),
+// and 1H / 4H / Daily swing levels weighted by volume (≥ 2×).
+// Setups start only inside the session window (NY premarket + regular session).
+// Everything is decided on CLOSED candles. Track record counts a bar that hits
+// both the stop and the target as a loss. A rule, not a guarantee: check it.
+// ════════════════════════════════════════════════════════════════
+
+// ─── Inputs ─────────────────────────────────────────────────────
+grpSe   = "Session"
+sessWin = input.session("0400-1600", "Setups only inside (NY premarket + session)", group = grpSe, display = display.none)
+tz      = input.string("America/New_York", "Timezone", group = grpSe, display = display.none)
+
+grpL    = "Liquidity (Solid / Strong only)"
+showD   = input.bool(true, "Previous day high/low", group = grpL, display = display.none)
+showW   = input.bool(true, "Previous week high/low", group = grpL, display = display.none)
+showM   = input.bool(true, "Previous month high/low", group = grpL, display = display.none)
+showNY  = input.bool(true, "New York session high/low (previous session)", group = grpL, display = display.none)
+showPre = input.bool(true, "New York premarket high/low", group = grpL, tooltip = "Needs extended trading hours turned on for the chart.", display = display.none)
+sessNY  = input.session("0930-1600", "New York session", group = grpL, display = display.none)
+sessPre = input.session("0400-0930", "New York premarket", group = grpL, display = display.none)
+useHeat = input.bool(true, "1H / 4H / Daily swing levels", group = grpL, display = display.none)
+minStr  = input.float(2.0, "Swing levels: minimum strength (×) — 2 = Solid, 3 = Strong", 1.0, 10.0, 0.1, group = grpL, display = display.none)
+pivLen  = input.int(3, "Swing pivot strength (HTF bars each side)", 1, 20, group = grpL, display = display.none)
+halfLifeH = input.float(72.0, "Swing levels half-life (hours)", 1.0, 2000.0, group = grpL, display = display.none)
+mergePct  = input.float(0.05, "Merge swing levels closer than (× daily ATR)", 0.0, 1.0, 0.01, group = grpL, display = display.none)
+bandAtr   = input.float(0.1, "Liquidity band (× daily ATR): traded through = gone", 0.005, 0.5, 0.005, group = grpL, display = display.none)
+showLiq   = input.bool(true, "Draw liquidity levels", group = grpL, display = display.none)
+
+grpT = "Order block timeframes (OB1)"
+use1 = input.bool(false, "TF 1", inline = "t1", group = grpT, display = display.none)
+tf1  = input.timeframe("5", "", inline = "t1", group = grpT, display = display.none)
+use2 = input.bool(true, "TF 2", inline = "t2", group = grpT, display = display.none)
+tf2  = input.timeframe("15", "", inline = "t2", group = grpT, display = display.none)
+use3 = input.bool(true, "TF 3", inline = "t3", group = grpT, display = display.none)
+tf3  = input.timeframe("60", "", inline = "t3", group = grpT, display = display.none)
+use4 = input.bool(true, "TF 4", inline = "t4", group = grpT, display = display.none)
+tf4  = input.timeframe("240", "", inline = "t4", group = grpT, display = display.none)
+use5 = input.bool(true, "TF 5", inline = "t5", group = grpT, display = display.none)
+tf5  = input.timeframe("D", "", inline = "t5", group = grpT, display = display.none)
+
+grpO      = "Order blocks"
+swingLen  = input.int(10, "Swing length", 3, 50, group = grpO, display = display.none)
+endMethod = input.string("Close", "Invalidation", ["Wick", "Close"], group = grpO, display = display.none)
+keepPerTf = input.int(3, "Zones per timeframe (each side)", 1, 6, group = grpO, display = display.none)
+rmAbsPct  = input.float(100.0, "Remove zone when absorbed ≥ (%)", 1.0, 100.0, 1.0, group = grpO, display = display.none)
+maxAge    = input.int(200, "Decay: remove zones older than (bars of their own timeframe)", 10, 5000, group = grpO, display = display.none)
+showOB    = input.bool(true, "Draw order blocks", group = grpO, display = display.none)
+
+grpS      = "Setup rules"
+doLong    = input.bool(true, "Longs (sweep of sell-side liquidity below a bullish OB)", group = grpS, display = display.none)
+doShort   = input.bool(true, "Shorts (sweep of buy-side liquidity above a bearish OB)", group = grpS, display = display.none)
+needOB1   = input.bool(true, "Require OB1 next to the liquidity", group = grpS, tooltip = "Off = any Solid / Strong liquidity sweep can start a setup.", display = display.none)
+liqDist   = input.float(1.0, "Liquidity within (× daily ATR) of OB1", 0.1, 5.0, 0.1, group = grpS, display = display.none)
+sweepN    = input.int(3, "Sweep: back within N candles (else RUN)", 1, 20, group = grpS, display = display.none)
+bosLook   = input.int(5, "BOS level = extreme of the N candles before the sweep", 2, 30, group = grpS, display = display.none)
+bosWait   = input.int(20, "BOS must happen within (candles after the sweep)", 2, 100, group = grpS, display = display.none)
+fillWait  = input.int(30, "Price must return to OB2 within (candles)", 2, 200, group = grpS, display = display.none)
+armMax    = input.int(300, "Waiting for the sweep expires after (candles)", 10, 3000, group = grpS, display = display.none)
+stopBuf   = input.float(0.05, "Stop beyond the sweep extreme (× daily ATR)", 0.0, 1.0, 0.01, group = grpS, display = display.none)
+tgtMode   = input.string("Nearest liquidity", "Target", ["Nearest liquidity", "First liquidity at min R:R or more"], group = grpS, display = display.none)
+minRR     = input.float(2.0, "Minimum reward:risk", 0.5, 20.0, 0.1, group = grpS, display = display.none)
+
+grpV     = "Style"
+colKey   = input.color(#ff9f1a, "Key liquidity", group = grpV, display = display.none)
+colHeat  = input.color(#2f3cff, "Swing liquidity", group = grpV, display = display.none)
+colBull  = input.color(color.new(#089981, 75), "Bullish OB", group = grpV, display = display.none)
+colBear  = input.color(color.new(#f23645, 75), "Bearish OB", group = grpV, display = display.none)
+colSweep = input.color(#9c27b0, "Sweep", group = grpV, display = display.none)
+colOB2   = input.color(color.new(#00bcd4, 70), "OB2 zone", group = grpV, display = display.none)
+lblSize  = input.string("Normal", "Label size", ["Small", "Normal", "Large"], group = grpV, display = display.none)
+showTbl  = input.bool(true, "Track record table", group = grpV, display = display.none)
+keepSet  = input.int(25, "Keep drawings of the last N setups", 1, 60, group = grpV, display = display.none)
+
+// ─── Shared ─────────────────────────────────────────────────────
+chartSec = timeframe.in_seconds()
+ms       = chartSec * 1000
+lblSz    = lblSize == "Small" ? size.small : lblSize == "Large" ? size.large : size.normal
+noCol    = color.new(color.black, 100)
+dATR     = request.security(syminfo.tickerid, "D", ta.atr(14)[1], lookahead = barmerge.lookahead_on)
+atrD     = nz(dATR, ta.atr(14) * 5)
+bandW    = math.max(syminfo.mintick, bandAtr * atrD)
+decay    = math.pow(0.5, chartSec / (halfLifeH * 3600.0))
+inSess   = chartSec >= 86400 or not na(time(timeframe.period, sessWin, tz))
+fmtP(float x) =>
+    str.tostring(x, format.mintick)
+
+// ════════════════════════════════════════════════════════════════
+// LIQUIDITY · key levels
+// ════════════════════════════════════════════════════════════════
+trackSess(string tf, string sess, string z) =>
+    bool inS = not na(time(tf, sess, z))
+    var float curH  = na
+    var float curL  = na
+    var float doneH = na
+    var float doneL = na
+    if inS and not inS[1]
+        curH := high
+        curL := low
+    else if inS
+        curH := math.max(curH, high)
+        curL := math.min(curL, low)
+    if not inS and inS[1]
+        doneH := curH
+        doneL := curL
+    [doneH, doneL]
+
+allSess(string tf) =>
+    [nyH, nyL] = trackSess(tf, sessNY, tz)
+    [prH, prL] = trackSess(tf, sessPre, tz)
+    [nyH, nyL, prH, prL]
+
+[pdH, pdL] = request.security(syminfo.tickerid, "D", [high[1], low[1]], lookahead = barmerge.lookahead_on)
+[pwH, pwL] = request.security(syminfo.tickerid, "W", [high[1], low[1]], lookahead = barmerge.lookahead_on)
+[pmH, pmL] = request.security(syminfo.tickerid, "M", [high[1], low[1]], lookahead = barmerge.lookahead_on)
+sessTf = chartSec <= 900 ? timeframe.period : "15"
+[nyH, nyL, prH, prL] = request.security(syminfo.tickerid, sessTf, allSess(sessTf))
+
+bool intraday = chartSec < 86400
+bool nyHOn = showNY and intraday and not (showD and math.abs(nyH - pdH) <= syminfo.mintick)
+bool nyLOn = showNY and intraday and not (showD and math.abs(nyL - pdL) <= syminfo.mintick)
+
+// ════════════════════════════════════════════════════════════════
+// LIQUIDITY · 1H / 4H / Daily swing levels (volume weighted, decayed)
+// ════════════════════════════════════════════════════════════════
+type Lvl
+    float price
+    int   side        // 1 = high (buy-side), -1 = low (sell-side)
+    float inten
+    int   x1
+
+var array<Lvl> lvls = array.new<Lvl>()
+
+pivData() =>
+    ph  = ta.pivothigh(high, pivLen, pivLen)
+    pl  = ta.pivotlow(low, pivLen, pivLen)
+    rel = nz(volume / ta.sma(volume, 20), 1.0)
+    [ph[1], pl[1], time[pivLen + 1], rel[pivLen + 1]]
+
+[h1H, h1L, h1T, h1R] = request.security(syminfo.tickerid, "60",  pivData(), gaps = barmerge.gaps_on, lookahead = barmerge.lookahead_on)
+[h4H, h4L, h4T, h4R] = request.security(syminfo.tickerid, "240", pivData(), gaps = barmerge.gaps_on, lookahead = barmerge.lookahead_on)
+[d1H, d1L, d1T, d1R] = request.security(syminfo.tickerid, "D",   pivData(), gaps = barmerge.gaps_on, lookahead = barmerge.lookahead_on)
+
+addLvl(float p, float inten, int side, int t) =>
+    bool merged = false
+    float md = mergePct * atrD
+    for l in lvls
+        if l.side == side and math.abs(l.price - p) <= md
+            float tot = l.inten + inten
+            l.price := (l.price * l.inten + p * inten) / tot
+            l.inten := tot
+            l.x1    := math.min(l.x1, t)
+            merged := true
+            break
+    if not merged
+        lvls.push(Lvl.new(p, side, inten, t))
+        if lvls.size() > 120
+            lvls.shift()
+    lvls.size()
+
+if useHeat
+    int n = lvls.size()
+    if n > 0
+        for i = n - 1 to 0
+            Lvl l = lvls.get(i)
+            l.inten *= decay
+            bool gone = l.side == 1 ? high >= l.price + bandW : low <= l.price - bandW
+            if gone or l.inten < 0.3
+                lvls.remove(i)
+    if chartSec <= 3600
+        if not na(h1H)
+            addLvl(h1H, h1R * 1.0, 1, h1T)
+        if not na(h1L)
+            addLvl(h1L, h1R * 1.0, -1, h1T)
+    if chartSec <= 14400
+        if not na(h4H)
+            addLvl(h4H, h4R * 2.0, 1, h4T)
+        if not na(h4L)
+            addLvl(h4L, h4R * 2.0, -1, h4T)
+    if chartSec <= 86400
+        if not na(d1H)
+            addLvl(d1H, d1R * 3.0, 1, d1T)
+        if not na(d1L)
+            addLvl(d1L, d1R * 3.0, -1, d1T)
+
+strWord(float x) =>
+    x >= 3 ? "Strong" : "Solid"
+
+// This bar's liquidity pools: buy-side (highs) and sell-side (lows)
+array<float>  bslP = array.new<float>()
+array<string> bslN = array.new<string>()
+array<float>  sslP = array.new<float>()
+array<string> sslN = array.new<string>()
+addPool(array<float> ps, array<string> ns, float p, string name, bool on) =>
+    if on and not na(p)
+        ps.push(p)
+        ns.push(name)
+    ps.size()
+
+addPool(bslP, bslN, pdH, "PDH", showD and chartSec <= 86400)
+addPool(sslP, sslN, pdL, "PDL", showD and chartSec <= 86400)
+addPool(bslP, bslN, pwH, "PWH", showW and chartSec <= 604800)
+addPool(sslP, sslN, pwL, "PWL", showW and chartSec <= 604800)
+addPool(bslP, bslN, pmH, "PMH", showM)
+addPool(sslP, sslN, pmL, "PML", showM)
+addPool(bslP, bslN, nyH, "NY H", nyHOn)
+addPool(sslP, sslN, nyL, "NY L", nyLOn)
+addPool(bslP, bslN, prH, "PreMkt H", showPre and intraday)
+addPool(sslP, sslN, prL, "PreMkt L", showPre and intraday)
+int nKeyB = bslP.size()
+int nKeyS = sslP.size()
+if useHeat
+    for l in lvls
+        if l.inten >= minStr
+            if l.side == 1
+                addPool(bslP, bslN, l.price, strWord(l.inten) + " liq " + str.tostring(l.inten, "#.#") + "×", true)
+            else
+                addPool(sslP, sslN, l.price, strWord(l.inten) + " liq " + str.tostring(l.inten, "#.#") + "×", true)
+
+// ════════════════════════════════════════════════════════════════
+// ORDER BLOCKS (OB1) from fixed timeframes
+// ════════════════════════════════════════════════════════════════
+type OB
+    float top
+    float bottom
+    int   startTime
+    float deepest
+    bool  breaker = false
+    int   bornBar = na
+
+obEngine(int len, string endM, float rmAbs, int ageMax) =>
+    var array<OB> bulls = array.new<OB>()
+    var array<OB> bears = array.new<OB>()
+    var int   swingType  = 0
+    var float topY       = na
+    var int   topX       = na
+    var bool  topCrossed = true
+    var float btmY       = na
+    var int   btmX       = na
+    var bool  btmCrossed = true
+    float atrV  = ta.atr(10)
+    float upper = ta.highest(len)
+    float lower = ta.lowest(len)
+    int prevType = swingType
+    swingType := high[len] > upper ? 0 : low[len] < lower ? 1 : swingType
+    if swingType == 0 and prevType != 0
+        topY       := high[len]
+        topX       := bar_index - len
+        topCrossed := false
+    if swingType == 1 and prevType != 1
+        btmY       := low[len]
+        btmX       := bar_index - len
+        btmCrossed := false
+    if bulls.size() > 0
+        for i = bulls.size() - 1 to 0
+            OB ob = bulls.get(i)
+            if not ob.breaker
+                if low <= ob.top
+                    ob.deepest := na(ob.deepest) ? low : math.min(ob.deepest, low)
+                if (endM == "Wick" ? low : math.min(open, close)) < ob.bottom
+                    ob.breaker := true
+                else if bar_index - ob.bornBar > ageMax or (not na(ob.deepest) and (ob.top - ob.deepest) >= rmAbs * (ob.top - ob.bottom))
+                    bulls.remove(i)
+            else
+                bulls.remove(i)
+    if bears.size() > 0
+        for i = bears.size() - 1 to 0
+            OB ob = bears.get(i)
+            if not ob.breaker
+                if high >= ob.bottom
+                    ob.deepest := na(ob.deepest) ? high : math.max(ob.deepest, high)
+                if (endM == "Wick" ? high : math.max(open, close)) > ob.top
+                    ob.breaker := true
+                else if bar_index - ob.bornBar > ageMax or (not na(ob.deepest) and (ob.deepest - ob.bottom) >= rmAbs * (ob.top - ob.bottom))
+                    bears.remove(i)
+            else
+                bears.remove(i)
+    if not topCrossed and not na(topY) and close > topY
+        topCrossed := true
+        int span = math.min(bar_index - topX, 300)
+        if span >= 2
+            float bBtm = low[1]
+            float bTop = high[1]
+            int   bLoc = time[1]
+            if span > 2
+                for i = 2 to span - 1
+                    if low[i] <= bBtm
+                        bBtm := low[i]
+                        bTop := high[i]
+                        bLoc := time[i]
+            if math.abs(bTop - bBtm) <= atrV * 3.5
+                bulls.unshift(OB.new(bTop, bBtm, bLoc, na, false, bar_index))
+                if bulls.size() > 12
+                    bulls.pop()
+    if not btmCrossed and not na(btmY) and close < btmY
+        btmCrossed := true
+        int span = math.min(bar_index - btmX, 300)
+        if span >= 2
+            float bTop = high[1]
+            float bBtm = low[1]
+            int   bLoc = time[1]
+            if span > 2
+                for i = 2 to span - 1
+                    if high[i] >= bTop
+                        bTop := high[i]
+                        bBtm := low[i]
+                        bLoc := time[i]
+            if math.abs(bTop - bBtm) <= atrV * 3.5
+                bears.unshift(OB.new(bTop, bBtm, bLoc, na, false, bar_index))
+                if bears.size() > 12
+                    bears.pop()
+    // nearest live bullish OB at/below the price and bearish OB at/above it (cheap floats every bar)
+    float nbT = na
+    float nbB = na
+    float nsT = na
+    float nsB = na
+    for ob in bulls
+        if not ob.breaker and ob.bottom < close and (na(nbT) or ob.top > nbT)
+            nbT := ob.top
+            nbB := ob.bottom
+    for ob in bears
+        if not ob.breaker and ob.top > close and (na(nsB) or ob.bottom < nsB)
+            nsT := ob.top
+            nsB := ob.bottom
+    // the full lists only on the last bar (memory)
+    array<OB> outBulls = barstate.islast ? bulls : na
+    array<OB> outBears = barstate.islast ? bears : na
+    [outBulls, outBears, nbT, nbB, nsT, nsB]
+
+[b1, s1, nb1T, nb1B, ns1T, ns1B] = request.security(syminfo.tickerid, tf1, obEngine(swingLen, endMethod, rmAbsPct / 100, maxAge))
+[b2, s2, nb2T, nb2B, ns2T, ns2B] = request.security(syminfo.tickerid, tf2, obEngine(swingLen, endMethod, rmAbsPct / 100, maxAge))
+[b3, s3, nb3T, nb3B, ns3T, ns3B] = request.security(syminfo.tickerid, tf3, obEngine(swingLen, endMethod, rmAbsPct / 100, maxAge))
+[b4, s4, nb4T, nb4B, ns4T, ns4B] = request.security(syminfo.tickerid, tf4, obEngine(swingLen, endMethod, rmAbsPct / 100, maxAge))
+[b5, s5, nb5T, nb5B, ns5T, ns5B] = request.security(syminfo.tickerid, tf5, obEngine(swingLen, endMethod, rmAbsPct / 100, maxAge))
+
+tfOk(bool use, string tf) =>
+    use and timeframe.in_seconds(tf) >= chartSec
+
+fmtTf(string tf) =>
+    int s = timeframe.in_seconds(tf)
+    s >= 2592000 ? "M" : s >= 604800 ? "W" : s >= 86400 ? "D" : s >= 3600 ? str.tostring(s / 3600) + "H" : str.tostring(s / 60) + "m"
+
+// OB1 candidates this bar: the highest bullish OB under the price, the lowest bearish OB over it
+float ob1BullT = na
+float ob1BullB = na
+string ob1BullTf = ""
+float ob1BearT = na
+float ob1BearB = na
+string ob1BearTf = ""
+pickBull(float t, float b, string tf, bool ok, float curT) =>
+    ok and not na(t) and (na(curT) or t > curT)
+pickBear(float t, float b, string tf, bool ok, float curB) =>
+    ok and not na(b) and (na(curB) or b < curB)
+if pickBull(nb1T, nb1B, tf1, tfOk(use1, tf1), ob1BullT)
+    ob1BullT := nb1T, ob1BullB := nb1B, ob1BullTf := fmtTf(tf1)
+if pickBull(nb2T, nb2B, tf2, tfOk(use2, tf2), ob1BullT)
+    ob1BullT := nb2T, ob1BullB := nb2B, ob1BullTf := fmtTf(tf2)
+if pickBull(nb3T, nb3B, tf3, tfOk(use3, tf3), ob1BullT)
+    ob1BullT := nb3T, ob1BullB := nb3B, ob1BullTf := fmtTf(tf3)
+if pickBull(nb4T, nb4B, tf4, tfOk(use4, tf4), ob1BullT)
+    ob1BullT := nb4T, ob1BullB := nb4B, ob1BullTf := fmtTf(tf4)
+if pickBull(nb5T, nb5B, tf5, tfOk(use5, tf5), ob1BullT)
+    ob1BullT := nb5T, ob1BullB := nb5B, ob1BullTf := fmtTf(tf5)
+if pickBear(ns1T, ns1B, tf1, tfOk(use1, tf1), ob1BearB)
+    ob1BearT := ns1T, ob1BearB := ns1B, ob1BearTf := fmtTf(tf1)
+if pickBear(ns2T, ns2B, tf2, tfOk(use2, tf2), ob1BearB)
+    ob1BearT := ns2T, ob1BearB := ns2B, ob1BearTf := fmtTf(tf2)
+if pickBear(ns3T, ns3B, tf3, tfOk(use3, tf3), ob1BearB)
+    ob1BearT := ns3T, ob1BearB := ns3B, ob1BearTf := fmtTf(tf3)
+if pickBear(ns4T, ns4B, tf4, tfOk(use4, tf4), ob1BearB)
+    ob1BearT := ns4T, ob1BearB := ns4B, ob1BearTf := fmtTf(tf4)
+if pickBear(ns5T, ns5B, tf5, tfOk(use5, tf5), ob1BearB)
+    ob1BearT := ns5T, ob1BearB := ns5B, ob1BearTf := fmtTf(tf5)
+
+// ════════════════════════════════════════════════════════════════
+// SETUP ENGINE (one per side)
+// ════════════════════════════════════════════════════════════════
+// st: 0 idle · 1 OB1 + liquidity found, waiting for the sweep · 2 closed past the
+//     liquidity, waiting to come back · 3 swept, waiting for the BOS · 4 OB2 limit
+//     waiting for price to return · 5 in the trade
+type Setup
+    int    side
+    int    st      = 0
+    float  ob1T
+    float  ob1B
+    string ob1Tf   = ""
+    float  liq
+    string liqName = ""
+    int    armBar
+    int    brkBar
+    int    swBar
+    float  ext
+    float  bos
+    float  ob2T
+    float  ob2B
+    int    ob2Time
+    int    ob2Bar
+    float  entry
+    float  sl
+    float  tp
+    string tpName  = ""
+    float  rr
+    box    bx
+    line   lnE
+    line   lnS
+    line   lnT
+    int    nSetups = 0
+    int    wins    = 0
+    int    losses  = 0
+    int    skips   = 0
+    int    cancels = 0
+    float  sumR    = 0.0
+
+var Setup L = Setup.new(1)
+var Setup S = Setup.new(-1)
+var array<label> evLbls = array.new<label>()
+var array<box>   setBoxes = array.new<box>()
+var array<line>  setLines = array.new<line>()
+var array<bool>  ev = array.from(false, false, false, false, false, false)   // sweep, OB2, fill · long then short
+ev.fill(false)
+
+evLabel(int d, bool atExt, string txt, color bg, color tc) =>
+    bool below = d == 1 ? atExt : not atExt   // long: sweep/entry labels under the candle
+    evLbls.push(label.new(bar_index, below ? low : high, txt, style = below ? label.style_label_up : label.style_label_down, color = bg, textcolor = tc, size = lblSz, text_formatting = text.format_bold))
+    if evLbls.size() > 200
+        evLbls.shift().delete()
+    evLbls.size()
+
+// Liquidity just beyond OB1 (below a bullish OB / above a bearish one), and still beyond the price
+pickLiq(array<float> ps, array<string> ns, int d, float ref, float maxD) =>
+    float best = na
+    string nm  = ""
+    if not na(ref)
+        for [i, p] in ps
+            bool ok = d == 1 ? p < ref and ref - p <= maxD and p < close : p > ref and p - ref <= maxD and p > close
+            if ok and (na(best) or (d == 1 ? p > best : p < best))
+                best := p
+                nm   := ns.get(i)
+    [best, nm]
+
+// Target: nearest opposite liquidity beyond the entry, at least minDist away
+pickTgt(array<float> ps, array<string> ns, int d, float entry, float minDist, float obEdge, string obName) =>
+    float best = na
+    string nm  = ""
+    for [i, p] in ps
+        bool ok = d == 1 ? p - entry >= minDist and p > entry : entry - p >= minDist and p < entry
+        if ok and (na(best) or (d == 1 ? p < best : p > best))
+            best := p
+            nm   := ns.get(i)
+    if not na(obEdge)
+        bool ok = d == 1 ? obEdge - entry >= minDist and obEdge > entry : entry - obEdge >= minDist and obEdge < entry
+        if ok and (na(best) or (d == 1 ? obEdge < best : obEdge > best))
+            best := obEdge
+            nm   := obName
+    [best, nm]
+
+// OB2: the last opposite candle with the most extreme price since `back` bars ago (fallback: the extreme candle)
+findOB2(int d, int back) =>
+    float oT = na
+    float oB = na
+    int   oX = na
+    float ex = na
+    float fT = na
+    float fB = na
+    int   fX = na
+    float fx = na
+    for i = 0 to math.min(back, 100)
+        bool against = d == 1 ? close[i] < open[i] : close[i] > open[i]
+        float e = d == 1 ? low[i] : high[i]
+        if against and (na(ex) or (d == 1 ? e < ex : e > ex))
+            ex := e
+            oT := high[i]
+            oB := low[i]
+            oX := time[i]
+        if na(fx) or (d == 1 ? e < fx : e > fx)
+            fx := e
+            fT := high[i]
+            fB := low[i]
+            fX := time[i]
+    if na(oT)
+        oT := fT
+        oB := fB
+        oX := fX
+    [oT, oB, oX]
+
+// BOS level: extreme of the bosLook candles before `off` bars ago
+bosLevel(int d, int off) =>
+    float b = na
+    for i = off + 1 to off + bosLook
+        b := d == 1 ? math.max(nz(b, high[i]), high[i]) : math.min(nz(b, low[i]), low[i])
+    b
+
+resetSetup(Setup s) =>
+    s.st := 0
+    s.liq := na
+    s.ob1T := na
+    s.ob1B := na
+    s.st
+
+closeDrawings(Setup s) =>
+    if not na(s.bx)
+        s.bx.set_right(time)
+    if not na(s.lnE)
+        s.lnE.set_x2(time)
+        s.lnS.set_x2(time)
+        s.lnT.set_x2(time)
+    s.st
+
+step(Setup s, float obT, float obB, string obTf, array<float> liqP, array<string> liqN, array<float> tgtP, array<string> tgtN, float oppEdge, string oppName) =>
+    int d = s.side
+    string buySell = d == 1 ? "BUY" : "SELL"
+    int evBase = d == 1 ? 0 : 3
+    // ── 5 · in the trade
+    if s.st == 5
+        bool stopHit = d == 1 ? low <= s.sl : high >= s.sl
+        bool tpHit   = d == 1 ? high >= s.tp : low <= s.tp
+        if stopHit
+            s.losses += 1
+            s.sumR   -= 1
+            evLabel(d, true, "STOPPED −1R", color.new(#787b86, 0), color.white)
+            closeDrawings(s)
+            resetSetup(s)
+        else if tpHit
+            s.wins += 1
+            s.sumR += s.rr
+            evLabel(d, false, "TARGET HIT +" + str.tostring(s.rr, "#.#") + "R", d == 1 ? #089981 : #f23645, color.white)
+            closeDrawings(s)
+            resetSetup(s)
+        else
+            closeDrawings(s)
+            if not na(s.bx)
+                s.bx.set_right(time + 5 * ms)
+                s.lnE.set_x2(time + 5 * ms)
+                s.lnS.set_x2(time + 5 * ms)
+                s.lnT.set_x2(time + 5 * ms)
+    // ── 4 · OB2 limit waiting
+    if s.st == 4 and bar_index > s.ob2Bar
+        bool through = d == 1 ? close < s.ob2B : close > s.ob2T
+        bool filled  = inSess and (d == 1 ? low <= s.entry : high >= s.entry)
+        bool missed  = d == 1 ? high >= s.tp : low <= s.tp
+        if filled
+            s.st := 5
+            s.nSetups += 1
+            ev.set(evBase + 2, true)
+            evLabel(d, true, buySell + " @ OB2 " + fmtP(s.entry), d == 1 ? #089981 : #f23645, color.white)
+            bool stopNow = d == 1 ? low <= s.sl or close <= s.sl : high >= s.sl or close >= s.sl
+            if stopNow
+                s.losses += 1
+                s.sumR   -= 1
+                evLabel(d, true, "STOPPED −1R", color.new(#787b86, 0), color.white)
+                closeDrawings(s)
+                resetSetup(s)
+        else if through or missed or bar_index - s.ob2Bar > fillWait
+            s.cancels += 1
+            evLabel(d, false, through ? "OB2 cancelled: closed through" : missed ? "OB2 cancelled: ran to target without us" : "OB2 expired", color.new(#787b86, 30), color.white)
+            closeDrawings(s)
+            resetSetup(s)
+        else
+            s.bx.set_right(time + 5 * ms)
+            s.lnE.set_x2(time + 5 * ms)
+            s.lnS.set_x2(time + 5 * ms)
+            s.lnT.set_x2(time + 5 * ms)
+    // ── 3 · swept, waiting for the break of structure
+    if s.st == 3
+        s.ext := d == 1 ? math.min(s.ext, low) : math.max(s.ext, high)
+        bool bosNow = d == 1 ? close > s.bos : close < s.bos
+        bool newExt = d == 1 ? close < s.ext : close > s.ext
+        if bosNow
+            [oT, oB, oX] = findOB2(d, bar_index - s.swBar + (na(s.brkBar) ? 0 : s.swBar - s.brkBar))
+            float entry = d == 1 ? oT : oB
+            float sl    = d == 1 ? s.ext - stopBuf * atrD : s.ext + stopBuf * atrD
+            float risk  = math.abs(entry - sl)
+            [tp, tpName] = pickTgt(tgtP, tgtN, d, entry, tgtMode == "Nearest liquidity" ? 0.0 : minRR * risk, oppEdge, oppName)
+            float rr = risk > 0 and not na(tp) ? math.abs(tp - entry) / risk : na
+            if na(rr) or rr < minRR
+                s.skips += 1
+                evLabel(d, false, "OB2 skipped: " + (na(rr) ? "no target liquidity" : "R:R " + str.tostring(rr, "#.#") + " < " + str.tostring(minRR, "#.#")), color.new(#787b86, 30), color.white)
+                resetSetup(s)
+            else
+                s.st := 4
+                s.ob2T := oT
+                s.ob2B := oB
+                s.ob2Time := oX
+                s.ob2Bar := bar_index
+                s.entry := entry
+                s.sl := sl
+                s.tp := tp
+                s.tpName := tpName
+                s.rr := rr
+                ev.set(evBase + 1, true)
+                s.bx  := box.new(oX, oT, time + 5 * ms, oB, xloc = xloc.bar_time, bgcolor = colOB2, border_color = color.new(colOB2, 0), text = "OB2", text_color = color.new(color.black, 0), text_size = size.small, text_halign = text.align_left, text_formatting = text.format_bold)
+                s.lnE := line.new(oX, entry, time + 5 * ms, entry, xloc = xloc.bar_time, color = color.new(#2962ff, 0), width = 2)
+                s.lnS := line.new(oX, sl, time + 5 * ms, sl, xloc = xloc.bar_time, color = color.new(#f23645, 0), width = 1, style = line.style_dashed)
+                s.lnT := line.new(oX, tp, time + 5 * ms, tp, xloc = xloc.bar_time, color = color.new(#089981, 0), width = 1, style = line.style_dashed)
+                setBoxes.push(s.bx)
+                setLines.push(s.lnE)
+                setLines.push(s.lnS)
+                setLines.push(s.lnT)
+                if setBoxes.size() > keepSet
+                    setBoxes.shift().delete()
+                while setLines.size() > keepSet * 3
+                    setLines.shift().delete()
+                evLabel(d, false, "OB2 · " + buySell + " LIMIT " + fmtP(entry) + "\nSL " + fmtP(sl) + " · TP " + fmtP(tp) + " (" + tpName + ") · R:R " + str.tostring(rr, "#.#"), d == 1 ? #2962ff : #e65100, color.white)
+        else if newExt or bar_index - s.swBar > bosWait
+            evLabel(d, false, newExt ? "Sweep failed: new " + (d == 1 ? "low" : "high") : "No BOS in time", color.new(#787b86, 30), color.white)
+            resetSetup(s)
+    // ── 2 · closed past the liquidity: comes back (SWEEP) or holds (RUN)?
+    if s.st == 2
+        s.ext := d == 1 ? math.min(s.ext, low) : math.max(s.ext, high)
+        bool back = d == 1 ? close > s.liq : close < s.liq
+        if back
+            s.st := 3
+            s.swBar := bar_index
+            s.bos := bosLevel(d, bar_index - s.brkBar)
+            ev.set(evBase, true)
+            evLabel(d, true, "SWEEP · " + s.liqName + " " + fmtP(s.liq) + "\nwait for OB2", colSweep, color.white)
+        else if bar_index - s.brkBar >= sweepN
+            evLabel(d, true, "RUN · " + s.liqName + " · no setup", color.new(#787b86, 30), color.white)
+            resetSetup(s)
+    // ── 1 · waiting for the sweep of the liquidity beyond OB1
+    if s.st == 1
+        bool wick   = d == 1 ? low < s.liq : high > s.liq
+        bool closeP = d == 1 ? close < s.liq : close > s.liq
+        if bar_index - s.armBar > armMax
+            resetSetup(s)
+        else if not inSess
+            s.st := 1
+        else if closeP
+            s.st := 2
+            s.brkBar := bar_index
+            s.ext := d == 1 ? low : high
+        else if wick
+            s.st := 3
+            s.brkBar := na
+            s.swBar := bar_index
+            s.ext := d == 1 ? low : high
+            s.bos := bosLevel(d, 0)
+            ev.set(evBase, true)
+            evLabel(d, true, "SWEEP · " + s.liqName + " " + fmtP(s.liq) + "\nwait for OB2", colSweep, color.white)
+    // ── 0/1 · find (or refresh) OB1 with liquidity beyond it
+    if (s.st == 0 or s.st == 1) and inSess
+        float ref = needOB1 ? (d == 1 ? obB : obT) : close
+        [lp, ln] = pickLiq(liqP, liqN, d, ref, needOB1 ? liqDist * atrD : 3 * liqDist * atrD)
+        if not na(lp) and (s.st == 0 or lp != s.liq)
+            s.st := 1
+            s.liq := lp
+            s.liqName := ln
+            s.ob1T := obT
+            s.ob1B := obB
+            s.ob1Tf := obTf
+            s.armBar := bar_index
+    s.st
+
+if barstate.isconfirmed
+    if doLong
+        step(L, ob1BullT, ob1BullB, ob1BullTf, sslP, sslN, bslP, bslN, ob1BearB, ob1BearTf + " Bear OB")
+    if doShort
+        step(S, ob1BearT, ob1BearB, ob1BearTf, bslP, bslN, sslP, sslN, ob1BullT, ob1BullTf + " Bull OB")
+
+// ════════════════════════════════════════════════════════════════
+// DRAWING (last bar): liquidity, order blocks, OB1 wait notes, table
+// ════════════════════════════════════════════════════════════════
+var array<line>  liqLines = array.new<line>()
+var array<label> liqLbls  = array.new<label>()
+var array<box>   obBoxes  = array.new<box>()
+
+drawOBs(array<OB> src, int side, string tfLbl) =>
+    if not na(src)
+        int k = 0
+        for ob in src
+            if not ob.breaker and k < keepPerTf
+                k += 1
+                float h = ob.top - ob.bottom
+                float a = na(ob.deepest) or h <= 0 ? 0.0 : math.max(0.0, math.min(1.0, side == 1 ? (ob.top - ob.deepest) / h : (ob.deepest - ob.bottom) / h))
+                obBoxes.push(box.new(ob.startTime, ob.top, time + 15 * ms, ob.bottom, xloc = xloc.bar_time, bgcolor = side == 1 ? colBull : colBear, border_color = noCol, text = tfLbl + (side == 1 ? " Bull OB" : " Bear OB") + " · absorbed " + str.tostring(math.round(a * 100)) + "%", text_color = color.new(color.black, 0), text_size = size.small, text_halign = text.align_right, text_formatting = text.format_bold))
+    obBoxes.size()
+
+liqLine(float p, string name, color c, int w) =>
+    liqLines.push(line.new(bar_index - 1, p, bar_index, p, extend = extend.right, color = c, width = w))
+    liqLbls.push(label.new(bar_index + 3, p, name + " " + fmtP(p), style = label.style_label_left, color = noCol, textcolor = c, size = size.small, text_formatting = text.format_bold))
+    liqLines.size()
+
+if barstate.islast
+    for x in liqLines
+        x.delete()
+    liqLines.clear()
+    for x in liqLbls
+        x.delete()
+    liqLbls.clear()
+    for x in obBoxes
+        x.delete()
+    obBoxes.clear()
+    if showLiq
+        for [i, p] in bslP
+            liqLine(p, bslN.get(i), i < nKeyB ? colKey : colHeat, i < nKeyB ? 2 : 1)
+        for [i, p] in sslP
+            liqLine(p, sslN.get(i), i < nKeyS ? colKey : colHeat, i < nKeyS ? 2 : 1)
+    if showOB
+        if tfOk(use1, tf1)
+            drawOBs(b1, 1, fmtTf(tf1))
+            drawOBs(s1, -1, fmtTf(tf1))
+        if tfOk(use2, tf2)
+            drawOBs(b2, 1, fmtTf(tf2))
+            drawOBs(s2, -1, fmtTf(tf2))
+        if tfOk(use3, tf3)
+            drawOBs(b3, 1, fmtTf(tf3))
+            drawOBs(s3, -1, fmtTf(tf3))
+        if tfOk(use4, tf4)
+            drawOBs(b4, 1, fmtTf(tf4))
+            drawOBs(s4, -1, fmtTf(tf4))
+        if tfOk(use5, tf5)
+            drawOBs(b5, 1, fmtTf(tf5))
+            drawOBs(s5, -1, fmtTf(tf5))
+    // OB1 notes: don't trade it blindly
+    for s in array.from(L, S)
+        if s.st == 1 and not na(s.ob1T)
+            float y = s.side == 1 ? s.ob1T : s.ob1B
+            liqLbls.push(label.new(bar_index + 3, y, "OB1 (" + s.ob1Tf + ") · don't " + (s.side == 1 ? "buy" : "sell") + " blindly\nWAIT FOR THE SWEEP of " + s.liqName + " " + fmtP(s.liq), style = label.style_label_left, color = color.new(#131722, 10), textcolor = color.white, size = lblSz, text_formatting = text.format_bold))
+            liqLines.push(line.new(bar_index - 20, s.liq, bar_index + 3, s.liq, color = colSweep, width = 2, style = line.style_dotted))
+
+statusOf(Setup s) =>
+    s.st == 0 ? "No OB1 with liquidity nearby" : s.st == 1 ? "OB1 " + s.ob1Tf + " · wait for sweep of " + s.liqName + " " + fmtP(s.liq) : s.st == 2 ? "Closed past " + s.liqName + ": sweep or run?" : s.st == 3 ? "Swept · wait for BOS above/below " + fmtP(s.bos) : s.st == 4 ? "OB2 limit " + fmtP(s.entry) + " · SL " + fmtP(s.sl) + " · TP " + fmtP(s.tp) : "In trade from " + fmtP(s.entry) + " · SL " + fmtP(s.sl) + " · TP " + fmtP(s.tp)
+
+var table tbl = table.new(position.bottom_right, 7, 3, bgcolor = color.new(#131722, 10), border_width = 1, border_color = color.new(#363a45, 0))
+if showTbl and barstate.islast
+    color tc = color.white
+    tbl.cell(0, 0, "OB2 setup", text_color = tc, text_size = size.small, text_formatting = text.format_bold)
+    tbl.cell(1, 0, "Trades", text_color = tc, text_size = size.small)
+    tbl.cell(2, 0, "Target", text_color = tc, text_size = size.small)
+    tbl.cell(3, 0, "Stopped", text_color = tc, text_size = size.small)
+    tbl.cell(4, 0, "Win %", text_color = tc, text_size = size.small)
+    tbl.cell(5, 0, "Total R", text_color = tc, text_size = size.small)
+    tbl.cell(6, 0, "Now", text_color = tc, text_size = size.small)
+    for [r, s] in array.from(L, S)
+        int done = s.wins + s.losses
+        tbl.cell(0, r + 1, s.side == 1 ? "Longs" : "Shorts", text_color = s.side == 1 ? #26a69a : #ef5350, text_size = size.small, text_formatting = text.format_bold)
+        tbl.cell(1, r + 1, str.tostring(s.nSetups) + (s.skips + s.cancels > 0 ? " (" + str.tostring(s.skips) + " skipped, " + str.tostring(s.cancels) + " cancelled)" : ""), text_color = tc, text_size = size.small)
+        tbl.cell(2, r + 1, str.tostring(s.wins), text_color = #26a69a, text_size = size.small)
+        tbl.cell(3, r + 1, str.tostring(s.losses), text_color = #ef5350, text_size = size.small)
+        tbl.cell(4, r + 1, done > 0 ? str.tostring(math.round(100.0 * s.wins / done)) + "%" : "—", text_color = tc, text_size = size.small)
+        tbl.cell(5, r + 1, (s.sumR >= 0 ? "+" : "") + str.tostring(s.sumR, "#.#") + "R", text_color = s.sumR >= 0 ? #26a69a : #ef5350, text_size = size.small)
+        tbl.cell(6, r + 1, (s.side == 1 and not doLong) or (s.side == -1 and not doShort) ? "off" : statusOf(s), text_color = tc, text_size = size.small)
+
+// ─── Alerts ─────────────────────────────────────────────────────
+alertcondition(ev.get(0), "Long: SSL swept", "{{ticker}} OB2 setup: sell-side liquidity swept at {{close}}, wait for the new bullish OB")
+alertcondition(ev.get(1), "Long: OB2 buy limit", "{{ticker}} OB2 setup: new bullish OB formed, buy limit at its top ({{close}})")
+alertcondition(ev.get(2), "Long: BUY @ OB2", "{{ticker}} BUY @ OB2 filled at {{close}}")
+alertcondition(ev.get(3), "Short: BSL swept", "{{ticker}} OB2 setup: buy-side liquidity swept at {{close}}, wait for the new bearish OB")
+alertcondition(ev.get(4), "Short: OB2 sell limit", "{{ticker}} OB2 setup: new bearish OB formed, sell limit at its bottom ({{close}})")
+alertcondition(ev.get(5), "Short: SELL @ OB2", "{{ticker}} SELL @ OB2 filled at {{close}}")
