@@ -87,25 +87,25 @@ if barstate.islast
         if not na(kU)
             gmUp := kU
             gmLineUp := line.new(bar_index - 1, kU, bar_index, kU, extend = extend.both, color = gmColUp, width = gmWidth, style = line.style_solid)
-            gmTxtUp  := label.new(gmX, kU, "LARGEST POSITIVE GAMMA  " + str.tostring(kU, format.mintick) + "  (+" + str.tostring(gU, format.volume) + ")", xloc = xloc.bar_time, style = label.style_label_down, color = color.new(color.black, 100), textcolor = gmTxtCol, size = lblSz, text_formatting = text.format_bold)
+            gmTxtUp  := label.new(gmX, kU, "GEX · LARGEST POSITIVE GAMMA  " + str.tostring(kU, format.mintick) + "  (+" + str.tostring(gU, format.volume) + ")", xloc = xloc.bar_time, style = label.style_label_down, color = color.new(color.black, 100), textcolor = gmTxtCol, size = lblSz, text_formatting = text.format_bold)
     if gmBelow and (gmMode == "Always" or not anyBelow)
         [kD, gD] = gmBest(gmList, -1, close, gmRange)
         if not na(kD)
             gmDn := kD
             gmLineDn := line.new(bar_index - 1, kD, bar_index, kD, extend = extend.both, color = gmColDn, width = gmWidth, style = line.style_solid)
-            gmTxtDn  := label.new(gmX, kD, "LARGEST POSITIVE GAMMA  " + str.tostring(kD, format.mintick) + "  (+" + str.tostring(gD, format.volume) + ")", xloc = xloc.bar_time, style = label.style_label_down, color = color.new(color.black, 100), textcolor = gmTxtCol, size = lblSz, text_formatting = text.format_bold)
+            gmTxtDn  := label.new(gmX, kD, "GEX · LARGEST POSITIVE GAMMA  " + str.tostring(kD, format.mintick) + "  (+" + str.tostring(gD, format.volume) + ")", xloc = xloc.bar_time, style = label.style_label_down, color = color.new(color.black, 100), textcolor = gmTxtCol, size = lblSz, text_formatting = text.format_bold)
 
     if gmNeg
         [nB, ngB] = gmBest(gmList, -1, close, gmRange, -1)
         if not na(nB)
             gmNegBelow := nB
             gmLineNb := line.new(bar_index - 1, nB, bar_index, nB, extend = extend.both, color = gmColNeg, width = gmWidth, style = line.style_solid)
-            gmTxtNb  := label.new(gmX, nB, "LARGEST NEGATIVE GAMMA  " + str.tostring(nB, format.mintick) + "  (" + str.tostring(ngB, format.volume) + ")  · drops can speed up", xloc = xloc.bar_time, style = label.style_label_down, color = color.new(color.black, 100), textcolor = gmTxtCol, size = lblSz, text_formatting = text.format_bold)
+            gmTxtNb  := label.new(gmX, nB, "GEX · LARGEST NEGATIVE GAMMA  " + str.tostring(nB, format.mintick) + "  (" + str.tostring(ngB, format.volume) + ")  · drops can speed up", xloc = xloc.bar_time, style = label.style_label_down, color = color.new(color.black, 100), textcolor = gmTxtCol, size = lblSz, text_formatting = text.format_bold)
         [nA, ngA] = gmBest(gmList, 1, close, gmRange, -1)
         if not na(nA)
             gmNegAbove := nA
             gmLineNa := line.new(bar_index - 1, nA, bar_index, nA, extend = extend.both, color = gmColNeg, width = gmWidth, style = line.style_solid)
-            gmTxtNa  := label.new(gmX, nA, "LARGEST NEGATIVE GAMMA  " + str.tostring(nA, format.mintick) + "  (" + str.tostring(ngA, format.volume) + ")  · breakouts can squeeze", xloc = xloc.bar_time, style = label.style_label_down, color = color.new(color.black, 100), textcolor = gmTxtCol, size = lblSz, text_formatting = text.format_bold)
+            gmTxtNa  := label.new(gmX, nA, "GEX · LARGEST NEGATIVE GAMMA  " + str.tostring(nA, format.mintick) + "  (" + str.tostring(ngA, format.volume) + ")  · breakouts can squeeze", xloc = xloc.bar_time, style = label.style_label_down, color = color.new(color.black, 100), textcolor = gmTxtCol, size = lblSz, text_formatting = text.format_bold)
 
 plot(gmUp, "Largest +gamma above", display = display.data_window)
 plot(gmDn, "Largest +gamma below", display = display.data_window)
@@ -152,16 +152,16 @@ if gmBuyNow
     float st = bLvl * (1 - gmStopP / 100)
     float tg = nextAbove(close)
     string why = bFloor ? "floor held at +gamma " : "squeeze through -gamma "
-    gmSigLbls.push(label.new(bar_index, low, "BUY NOW " + str.tostring(close, format.mintick) + "\n" + why + str.tostring(bLvl, format.mintick) + "\nstop " + str.tostring(st, format.mintick) + (na(tg) ? "" : " · target " + str.tostring(tg, format.mintick)), style = label.style_label_up, color = #089981, textcolor = color.white, size = size.small, text_formatting = text.format_bold))
+    gmSigLbls.push(label.new(bar_index, low, "GEX BUY NOW " + str.tostring(close, format.mintick) + "\n" + why + str.tostring(bLvl, format.mintick) + "\nstop " + str.tostring(st, format.mintick) + (na(tg) ? "" : " · target " + str.tostring(tg, format.mintick)), style = label.style_label_up, color = #089981, textcolor = color.white, size = size.small, text_formatting = text.format_bold))
 if gmSellNow
     gmFiredSell := sLvl
     float st = sLvl * (1 + gmStopP / 100)
     float tg = nextBelow(close)
     string why = sCeil ? "ceiling at +gamma " : "trap door through -gamma "
-    gmSigLbls.push(label.new(bar_index, high, "SELL NOW " + str.tostring(close, format.mintick) + "\n" + why + str.tostring(sLvl, format.mintick) + "\nstop " + str.tostring(st, format.mintick) + (na(tg) ? "" : " · target " + str.tostring(tg, format.mintick)), style = label.style_label_down, color = #f23645, textcolor = color.white, size = size.small, text_formatting = text.format_bold))
+    gmSigLbls.push(label.new(bar_index, high, "GEX SELL NOW " + str.tostring(close, format.mintick) + "\n" + why + str.tostring(sLvl, format.mintick) + "\nstop " + str.tostring(st, format.mintick) + (na(tg) ? "" : " · target " + str.tostring(tg, format.mintick)), style = label.style_label_down, color = #f23645, textcolor = color.white, size = size.small, text_formatting = text.format_bold))
 if gmSigLbls.size() > 30
     gmSigLbls.shift().delete()
-plot(gmBuyNow ? 1 : 0, "Gamma BUY NOW", display = display.data_window)
-plot(gmSellNow ? 1 : 0, "Gamma SELL NOW", display = display.data_window)
-alertcondition(gmBuyNow, "Gamma BUY NOW", "{{ticker}} BUY NOW at a gamma line ({{close}}): floor held or squeeze")
-alertcondition(gmSellNow, "Gamma SELL NOW", "{{ticker}} SELL NOW at a gamma line ({{close}}): ceiling or trap door")
+plot(gmBuyNow ? 1 : 0, "GEX BUY NOW", display = display.data_window)
+plot(gmSellNow ? 1 : 0, "GEX SELL NOW", display = display.data_window)
+alertcondition(gmBuyNow, "GEX BUY NOW", "{{ticker}} GEX BUY NOW at a gamma line ({{close}}): floor held or squeeze")
+alertcondition(gmSellNow, "GEX SELL NOW", "{{ticker}} GEX SELL NOW at a gamma line ({{close}}): ceiling or trap door")
