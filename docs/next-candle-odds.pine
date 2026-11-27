@@ -17,6 +17,9 @@ indicator("Buy / Sell Timing + Breakout Odds", shorttitle = "Timing Odds", overl
 //   by +1..+4 steps (x ATR), and the same below its LOW, from past candles in the same state. Each level is drawn with
 //   its price and %. ACCURACY CHECK: over all past candles, the average probability given for "breaks the high" vs how
 //   often it really happened (same for the low). Close numbers = the % can be trusted.
+// BREAKOUT BUY / SELL: when the chance that the next candle breaks the last candle's high is at least "Breakout
+//   call" %, the BUY answer becomes BREAKOUT BUY with a buy stop just above that high (SELL: below the low).
+//   Otherwise the answer stays BUY NOW / SELL NOW / WAIT (at a price) / NO EDGE.
 // TRACK RECORD (out of sample: each call only used the candles before it): how often a WAIT price was reached and
 // how often a NOW call was right N candles later. If these are near 50%, ignore the advice.
 // It learns bar by bar on the chart's own history; no look-ahead, no repaint on closed candles.
@@ -35,6 +38,7 @@ grpB = "Breakout probability"
 showBo  = input.bool(true, "Show breakout probabilities (next candle)", group = grpB)
 boStep  = input.float(0.25, "Step between levels (x ATR)", minval = 0.05, step = 0.05, group = grpB)
 boLevels = input.int(4, "Levels each side (beyond the high / low)", minval = 1, maxval = 6, group = grpB)
+boThr   = input.float(60, "Breakout call: break chance at least (%)", minval = 50, maxval = 95, group = grpB)
 
 grpD = "Display"
 showLv  = input.bool(true, "Draw the buy / sell prices on the chart", group = grpD)
@@ -83,6 +87,10 @@ var int   hitPH = 0
 var float sumPL = 0.0
 var int   hitPL = 0
 var int   nCal = 0
+var int   nBoB = 0
+var int   hBoB = 0
+var int   nBoS = 0
+var int   hBoS = 0
 
 // candles waiting N candles for their outcome, with the advice given at their close
 var array<int>   qS = array.new<int>()
@@ -168,6 +176,10 @@ if barstate.isconfirmed and not na(atr) and not na(ema)
             sumPH += bPH, hitPH += hitH ? 1 : 0
             sumPL += bPL, hitPL += hitL ? 1 : 0
             nCal += 1
+            if bPH * 100 >= boThr
+                nBoB += 1, hBoB += hitH ? 1 : 0
+            if bPL * 100 >= boThr
+                nBoS += 1, hBoS += hitL ? 1 : 0
         int j = wB.get(bS) % memory
         mBH.set(bS, j, (high - bHi) / bAtr)
         mBL.set(bS, j, (bLo - low) / bAtr)
@@ -218,7 +230,7 @@ var array<line>     lns = array.new<line>()
 var array<label>    lbs = array.new<label>()
 var array<linefill> lfs = array.new<linefill>()
 pos = tblPosIn == "Bottom right" ? position.bottom_right : tblPosIn == "Top left" ? position.top_left : tblPosIn == "Bottom left" ? position.bottom_left : position.top_right
-var table tb = table.new(pos, 2, 11, bgcolor = color.new(#0b0e14, 0), border_width = 1, border_color = color.new(color.gray, 75))
+var table tb = table.new(pos, 2, 12, bgcolor = color.new(#0b0e14, 0), border_width = 1, border_color = color.new(color.gray, 75))
 
 var int lastS = na
 var float lastC = na
@@ -251,14 +263,6 @@ if barstate.islast and not na(lastS) and not na(lastA)
     float floorPx = na(fl80) ? na : base + fl80 * a
     float ceilPx = na(ce80) ? na : base + ce80 * a
     float medPx = na(med) ? na : base + med * a
-    if showLv and not na(buyPx)
-        lns.push(line.new(bar_index, buyPx, x2, buyPx, color = colUp, width = 2, style = bT == 2 ? line.style_dashed : line.style_solid))
-        lbs.push(label.new(x2, buyPx, (bT == 2 ? "BUY AT " : "BUY NOW ") + f(buyPx) + (bT == 2 ? "  (reached " + str.tostring(waitP, "#") + "% within " + hz + ")" : ""), style = label.style_label_left,
-             color = color.new(#0b0e14, 0), textcolor = colUp, size = size.small, text_formatting = text.format_bold))
-    if showLv and not na(sellPx)
-        lns.push(line.new(bar_index, sellPx, x2, sellPx, color = colDn, width = 2, style = sT == 2 ? line.style_dashed : line.style_solid))
-        lbs.push(label.new(x2, sellPx, (sT == 2 ? "SELL AT " : "SELL NOW ") + f(sellPx) + (sT == 2 ? "  (reached " + str.tostring(waitP, "#") + "% within " + hz + ")" : ""), style = label.style_label_left,
-             color = color.new(#0b0e14, 0), textcolor = colDn, size = size.small, text_formatting = text.format_bold))
     if showFan
         rets = rowVals(mRet, lastS)
         if rets.size() >= 5
@@ -273,7 +277,36 @@ if barstate.islast and not na(lastS) and not na(lastA)
 
     float pBreakH = na
     float pBreakL = na
-    if showBo and not na(bS) and math.min(wB.get(bS), memory) >= minN
+    bool boOk = not na(bS) and math.min(wB.get(bS), memory) >= minN
+    if boOk
+        pBreakH := shareAtLeast(mBH, bS, 1e-9)
+        pBreakL := shareAtLeast(mBL, bS, 1e-9)
+    bool boBuy = boOk and pBreakH * 100 >= boThr
+    bool boSell = boOk and pBreakL * 100 >= boThr
+    float tick = syminfo.mintick
+    if boBuy
+        buyCode := 3
+        buyPx := bHi + tick
+    if boSell
+        sellCode := 3
+        sellPx := bLo - tick
+    if showLv and boBuy
+        lns.push(line.new(bar_index, bHi + tick, x2, bHi + tick, color = colUp, width = 3))
+        lbs.push(label.new(x2, bHi + tick, "BREAKOUT BUY STOP " + f(bHi + tick) + "  (" + pct(pBreakH) + ")", style = label.style_label_left,
+             color = colUp, textcolor = color.white, size = size.small, text_formatting = text.format_bold))
+    if showLv and boSell
+        lns.push(line.new(bar_index, bLo - tick, x2, bLo - tick, color = colDn, width = 3))
+        lbs.push(label.new(x2, bLo - tick, "BREAKOUT SELL STOP " + f(bLo - tick) + "  (" + pct(pBreakL) + ")", style = label.style_label_left,
+             color = colDn, textcolor = color.white, size = size.small, text_formatting = text.format_bold))
+    if showLv and not na(buyPx) and buyCode != 3
+        lns.push(line.new(bar_index, buyPx, x2, buyPx, color = colUp, width = 2, style = bT == 2 ? line.style_dashed : line.style_solid))
+        lbs.push(label.new(x2, buyPx, (bT == 2 ? "BUY AT " : "BUY NOW ") + f(buyPx) + (bT == 2 ? "  (reached " + str.tostring(waitP, "#") + "% within " + hz + ")" : ""), style = label.style_label_left,
+             color = color.new(#0b0e14, 0), textcolor = colUp, size = size.small, text_formatting = text.format_bold))
+    if showLv and not na(sellPx) and sellCode != 3
+        lns.push(line.new(bar_index, sellPx, x2, sellPx, color = colDn, width = 2, style = sT == 2 ? line.style_dashed : line.style_solid))
+        lbs.push(label.new(x2, sellPx, (sT == 2 ? "SELL AT " : "SELL NOW ") + f(sellPx) + (sT == 2 ? "  (reached " + str.tostring(waitP, "#") + "% within " + hz + ")" : ""), style = label.style_label_left,
+             color = color.new(#0b0e14, 0), textcolor = colDn, size = size.small, text_formatting = text.format_bold))
+    if showBo and boOk
         int bx = barstate.isconfirmed ? bar_index + 1 : bar_index
         for k = 0 to boLevels
             float stepA = k * boStep
@@ -281,8 +314,6 @@ if barstate.islast and not na(lastS) and not na(lastA)
             float pL = shareAtLeast(mBL, bS, k == 0 ? 1e-9 : stepA)
             float pxH = bHi + stepA * bAtr
             float pxL = bLo - stepA * bAtr
-            if k == 0
-                pBreakH := pH, pBreakL := pL
             lns.push(line.new(bx - 1, pxH, bx + 2, pxH, color = color.new(colUp, k == 0 ? 0 : 40), width = k == 0 ? 2 : 1))
             lbs.push(label.new(bx + 2, pxH, (k == 0 ? "breaks high " : "+" + str.tostring(stepA, "#.##") + " ATR ") + f(pxH) + "  " + pct(pH), style = label.style_label_left,
                  color = color.new(#0b0e14, 0), textcolor = color.new(colUp, k == 0 ? 0 : 30), size = size.small, text_formatting = text.format_bold))
@@ -298,6 +329,14 @@ if barstate.islast and not na(lastS) and not na(lastA)
         string sellWhy = thin ? "" : (sT == 2 ? "price rallied to " + f(sellPx) + " or higher in " + str.tostring(waitP, "#") + "% of cases within " + hz + " (now " + f(base) + ")" : sT == 1 ? "rallies were small · lower " + hz + " later " + pct(pDn) + " of the time" : "lower " + hz + " later only " + pct(pDn) + " · no big rally to wait for") + "\nstayed below " + f(ceilPx) + " 8 times in 10"
         color bc = thin ? color.gray : bT == 2 ? colWait : bT == 1 ? colUp : color.gray
         color sc = thin ? color.gray : sT == 2 ? colWait : sT == 1 ? colDn : color.gray
+        if boBuy
+            buyHead := "BREAKOUT BUY — buy stop " + f(bHi + tick)
+            buyWhy := "the next candle broke above " + f(bHi) + " in " + pct(pBreakH) + " of past cases · +" + str.tostring(boStep, "#.##") + " ATR (" + f(bHi + boStep * bAtr) + "): " + pct(shareAtLeast(mBH, bS, boStep)) + "\nstop reference: below " + f(bLo) + " (the last candle's low)"
+            bc := colUp
+        if boSell
+            sellHead := "BREAKOUT SELL — sell stop " + f(bLo - tick)
+            sellWhy := "the next candle broke below " + f(bLo) + " in " + pct(pBreakL) + " of past cases · -" + str.tostring(boStep, "#.##") + " ATR (" + f(bLo - boStep * bAtr) + "): " + pct(shareAtLeast(mBL, bS, boStep))
+            sc := colDn
         table.cell(tb, 0, 0, "NOW " + f(base), text_color = color.white, text_size = size.small, text_formatting = text.format_bold)
         table.cell(tb, 1, 0, stateName(lastS) + "  ·  " + str.tostring(n) + " past cases", text_color = color.silver, text_size = size.small)
         table.cell(tb, 0, 1, "IF BUYING", text_color = color.white, bgcolor = color.new(colUp, 40), text_size = size.small, text_formatting = text.format_bold)
@@ -319,6 +358,8 @@ if barstate.islast and not na(lastS) and not na(lastA)
         if showBo
             table.cell(tb, 0, 9, "BREAKOUT next candle", text_color = color.white, bgcolor = color.new(colWait, 40), text_size = size.small, text_formatting = text.format_bold)
             table.cell(tb, 1, 9, na(pBreakH) ? "not enough history" : "above " + f(bHi) + ": " + pct(pBreakH) + "   ·   below " + f(bLo) + ": " + pct(pBreakL), text_color = color.white, text_size = size.small, text_formatting = text.format_bold)
+            table.cell(tb, 0, 11, "Track: BREAKOUT calls", text_color = color.silver, text_size = size.small)
+            table.cell(tb, 1, 11, "BUY " + rec(nBoB, hBoB, "broke the high") + "   ·   SELL " + rec(nBoS, hBoS, "broke the low"), text_color = color.white, text_size = size.small)
             table.cell(tb, 0, 10, "Accuracy check", text_color = color.silver, text_size = size.small)
             table.cell(tb, 1, 10, nCal == 0 ? "not enough history" : "high break: said " + str.tostring(100 * sumPH / nCal, "#") + "% avg → happened " + str.tostring(100.0 * hitPH / nCal, "#") + "%   ·   low break: said " + str.tostring(100 * sumPL / nCal, "#") + "% → happened " + str.tostring(100.0 * hitPL / nCal, "#") + "%  (" + str.tostring(nCal) + " candles)", text_color = color.white, text_size = size.small)
 
@@ -331,8 +372,14 @@ plot(bPH * 100, "Next candle breaks the high %", display = display.data_window)
 plot(bPL * 100, "Next candle breaks the low %", display = display.data_window)
 plot(buyPx, "Buy price (now or wait level)", display = display.data_window)
 plot(sellPx, "Sell price (now or wait level)", display = display.data_window)
-plot(buyCode, "Buy advice (1 now, 2 wait, 0 no edge)", display = display.data_window)
-plot(sellCode, "Sell advice (1 now, 2 wait, 0 no edge)", display = display.data_window)
+plot(buyCode, "Buy advice (3 breakout, 1 now, 2 wait, 0 no edge)", display = display.data_window)
+plot(sellCode, "Sell advice (3 breakout, 1 now, 2 wait, 0 no edge)", display = display.data_window)
+plot(nBoB > 0 ? 100.0 * hBoB / nBoB : na, "Track: BREAKOUT BUY broke the high %", display = display.data_window)
+plot(nBoB, "Track: BREAKOUT BUY calls", display = display.data_window)
+plot(nBoS > 0 ? 100.0 * hBoS / nBoS : na, "Track: BREAKOUT SELL broke the low %", display = display.data_window)
+plot(nBoS, "Track: BREAKOUT SELL calls", display = display.data_window)
+alertcondition(not na(bPH) and bPH * 100 >= boThr and barstate.isconfirmed, "BREAKOUT BUY", "{{ticker}} BREAKOUT BUY: the next candle breaks the high in at least the threshold % of past cases")
+alertcondition(not na(bPL) and bPL * 100 >= boThr and barstate.isconfirmed, "BREAKOUT SELL", "{{ticker}} BREAKOUT SELL: the next candle breaks the low in at least the threshold % of past cases")
 plot(nBuyNow > 0 ? 100.0 * wBuyNow / nBuyNow : na, "Track: BUY NOW right %", display = display.data_window)
 plot(nWaitDip > 0 ? 100.0 * fWaitDip / nWaitDip : na, "Track: BUY AT reached %", display = display.data_window)
 plot(nSellNow > 0 ? 100.0 * wSellNow / nSellNow : na, "Track: SELL NOW right %", display = display.data_window)
