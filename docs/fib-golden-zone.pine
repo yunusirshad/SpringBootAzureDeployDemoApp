@@ -1,31 +1,50 @@
 //@version=6
-indicator("Fib + Golden Zone (chart timeframe)", shorttitle = "Fib GZ", overlay = true, max_lines_count = 20, max_labels_count = 20, max_boxes_count = 5, max_bars_back = 2000)
-// Fib levels from the swing on the CHART'S timeframe (or a timeframe you pick).
-// Swing = highest high and lowest low of the last N bars of that timeframe.
-// Uptrend   (low came first, then high): 0 at the swing HIGH, 1 at the swing LOW.
-// Downtrend (high came first, then low): 0 at the swing LOW, 1 at the swing HIGH.
-// Either way 0 is the latest extreme, so 0.5–0.7 is the retracement ("golden zone").
-// 0.786 is the DEAD ZONE line: once a candle CLOSES beyond it (below it in an uptrend, above it in a downtrend)
-// after the latest extreme, the pullback has gone too deep and the setup is dead. A wick through it doesn't count.
-// Switch the chart from 5m to 1h to 1D and the swing follows it.
+indicator("Fib + Golden Zone (follows price)", shorttitle = "Fib GZ", overlay = true, max_lines_count = 30, max_labels_count = 100, max_boxes_count = 5, max_bars_back = 2000)
+// Fib levels that FOLLOW PRICE on the chart's timeframe (or a timeframe you pick).
+// 1 = the start of the leg (anchor), 0 = the latest extreme; 0.5–0.7 is the golden zone.
+//   Uptrend:   1 at the swing LOW, 0 at the HIGH. Every new high moves 0 up with it, live.
+//              After a real pullback (at least "Re-anchor" of the leg), a new high also moves 1 up to that
+//              pullback's low, so the fib always measures the latest leg. A close below 1 (or 0.786, your choice)
+//              ends the leg and starts a downtrend leg from that high.
+//   Downtrend: the mirror image (1 at the swing HIGH, 0 at the LOW).
+// Rules
+//   DEAD ZONE  0.786: a candle CLOSING beyond it (below in an uptrend) kills the setup until a new extreme.
+//   BUY        (uptrend) price pulled back into the golden zone (low at or under 0.5), not dead, then a green
+//              candle closes above the previous candle's high: entry = that close, stop = just under 0.786,
+//              T1 = 0 (the high), T2 = the -0.272 extension. Only when R:R to T1 is at least the minimum.
+//              One signal per pullback; a new high resets it. SELL is the mirror (off by default: long only).
+//   TARGETS    -0.272 and -0.618 extensions are drawn past 0.
 
 // ───── Inputs ─────
 swingTf    = input.timeframe("", "Swing timeframe (empty = the chart's)")
-lookback   = input.int(50, "Swing lookback (bars of that timeframe)", minval = 5)
-closedOnly = input.bool(true, "Use closed bars only (no repaint)")
-lvA        = input.float(0.0, "Level 1", step = 0.001, group = "Levels")
-lvB        = input.float(0.5, "Level 2 (golden zone start)", step = 0.001, group = "Levels")
-lvC        = input.float(0.7, "Level 3 (golden zone end)", step = 0.001, group = "Levels")
-lvD        = input.float(1.0, "Level 4", step = 0.001, group = "Levels")
+follow     = input.int(300, "Follow price over the last N bars", minval = 20, maxval = 5000, tooltip = "The swing is seeded this many bars back and then follows price bar by bar, so it always shows the current leg.")
+lookback   = input.int(50, "Seed window (bars) for the first swing", minval = 5)
+reanchor   = input.float(0.382, "Re-anchor 1 after a pullback of at least (of the leg)", minval = 0.1, maxval = 1.0, step = 0.001)
+flipAt     = input.float(1.0, "Start a new leg when a candle closes beyond", options = [1.0, 0.786], tooltip = "1.0: the leg ends on a full retrace. 0.786: the leg ends as soon as it is dead, and a new leg starts from its extreme.")
+liveOnly   = input.bool(true, "Update live with the forming candle (off = closed candles only, no repaint)")
+
+lvB        = input.float(0.5, "Golden zone start", step = 0.001, group = "Levels")
+lvC        = input.float(0.7, "Golden zone end", step = 0.001, group = "Levels")
 show618    = input.bool(true, "Show 0.618", group = "Levels")
 lv618      = input.float(0.618, "0.618 level", step = 0.001, group = "Levels")
 lvDead     = input.float(0.786, "Dead zone level (a close beyond it kills the setup)", step = 0.001, group = "Levels")
-colLine    = input.color(color.new(color.gray, 0), "Level lines", group = "Style")
+showExt    = input.bool(true, "Show extension targets", group = "Levels")
+ext1       = input.float(-0.272, "Extension 1 (T2)", step = 0.001, group = "Levels")
+ext2       = input.float(-0.618, "Extension 2", step = 0.001, group = "Levels")
+
+showBuy    = input.bool(true, "BUY signals (uptrend pullbacks)", group = "Signals")
+showSell   = input.bool(false, "SELL signals (downtrend bounces)", group = "Signals")
+minRR      = input.float(2.0, "Minimum R:R to T1", minval = 0.5, step = 0.1, group = "Signals")
+stopAtr    = input.float(0.1, "Stop beyond 0.786 by (x ATR 14)", minval = 0, step = 0.05, group = "Signals")
+showTbl    = input.bool(true, "Show status table", group = "Signals")
+
+colLine    = input.color(color.new(color.gray, 0), "0 and 1 lines", group = "Style")
 colGZ      = input.color(color.new(#f2c14e, 80), "Golden zone fill", group = "Style")
 colGZLine  = input.color(color.new(#f2c14e, 0), "Golden zone lines", group = "Style")
 col618     = input.color(color.new(#f7931a, 0), "0.618 line", group = "Style")
 colDead    = input.color(color.new(#f23645, 0), "Dead zone line", group = "Style")
 colDeadBg  = input.color(color.new(#f23645, 88), "Dead zone fill (0.786 to 1)", group = "Style")
+colExt     = input.color(color.new(#089981, 0), "Extension lines", group = "Style")
 colSwing   = input.color(color.new(#2962ff, 30), "Swing connector", group = "Style")
 lineW      = input.int(1, "Line width", minval = 1, maxval = 4, group = "Style")
 extendR    = input.bool(true, "Extend lines right", group = "Style")
@@ -34,47 +53,137 @@ showLbl    = input.bool(true, "Show level labels", group = "Style")
 tf = swingTf == "" ? timeframe.period : swingTf
 tfName = tf == "D" or tf == "1D" ? "D" : tf == "W" or tf == "1W" ? "W" : tf == "M" or tf == "1M" ? "M" : timeframe.in_seconds(tf) >= 3600 ? str.tostring(timeframe.in_seconds(tf) / 3600) + "h" : str.tostring(timeframe.in_seconds(tf) / 60) + "m"
 
-// ───── Swing on the chosen timeframe ─────
-swing(int off) =>
-    hb  = ta.highestbars(high, lookback)
-    lb  = ta.lowestbars(low, lookback)
-    hi  = ta.highest(high, lookback)
-    lo  = ta.lowest(low, lookback)
+// ───── Swing engine (runs on the swing timeframe, bar by bar) ─────
+// returns [anchor (1), anchor time, extreme (0), extreme time, direction 1 up / -1 down]
+swing() =>
+    var int   dir = 0
+    var float a = na
+    var int   aT = na
+    var float x = na
+    var int   xT = na
+    var float pb = na     // the deepest pullback since the extreme
+    var int   pbT = na
+    hb = ta.highestbars(high, lookback)
+    lb = ta.lowestbars(low, lookback)
+    hi = ta.highest(high, lookback)
+    lo = ta.lowest(low, lookback)
     hiT = time[-hb]
     loT = time[-lb]
-    [hi[off], lo[off], hiT[off], loT[off]]
+    int startBar = math.max(lookback - 1, last_bar_index - follow)
+    if dir == 0
+        if bar_index >= startBar and not na(hi) and not na(lo)
+            if hiT > loT
+                dir := 1, a := lo, aT := loT, x := hi, xT := hiT, pb := low, pbT := time
+            else
+                dir := -1, a := hi, aT := hiT, x := lo, xT := loT, pb := high, pbT := time
+    else if dir == 1
+        if high > x
+            if pb > a and (x - pb) >= reanchor * (x - a)
+                a := pb, aT := pbT
+            x := high, xT := time, pb := low, pbT := time
+        else if low < pb
+            pb := low, pbT := time
+        if close < x + flipAt * (a - x)
+            dir := -1, a := x, aT := xT, x := low, xT := time, pb := high, pbT := time
+    else
+        if low < x
+            if pb < a and (pb - x) >= reanchor * (a - x)
+                a := pb, aT := pbT
+            x := low, xT := time, pb := high, pbT := time
+        else if high > pb
+            pb := high, pbT := time
+        if close > x + flipAt * (a - x)
+            dir := 1, a := x, aT := xT, x := high, xT := time, pb := low, pbT := time
+    [a, aT, x, xT, dir]
 
-[hi0, lo0, hiT0, loT0] = request.security(syminfo.tickerid, tf, swing(0), lookahead = barmerge.lookahead_off)
-[hi1, lo1, hiT1, loT1] = request.security(syminfo.tickerid, tf, swing(1), lookahead = barmerge.lookahead_on)
+swingPrev() =>
+    [a, aT, x, xT, d] = swing()
+    [a[1], aT[1], x[1], xT[1], d[1]]
 
-hi  = closedOnly ? hi1  : hi0
-lo  = closedOnly ? lo1  : lo0
-hiT = closedOnly ? hiT1 : hiT0
-loT = closedOnly ? loT1 : loT0
+[aL, aTL, xL, xTL, dL] = request.security(syminfo.tickerid, tf, swing(), lookahead = barmerge.lookahead_off)
+[aC, aTC, xC, xTC, dC] = request.security(syminfo.tickerid, tf, swingPrev(), lookahead = barmerge.lookahead_on)
 
-upTrend = hiT > loT          // the high is the more recent extreme
-rng     = hi - lo
-lvlPrice(float l) => upTrend ? hi - l * rng : lo + l * rng
-startT  = math.min(hiT, loT) // anchor at the first swing point
-lastT   = math.max(hiT, loT) // the latest extreme (the 0 point)
-deadP   = lvlPrice(lvDead)
-// beyond the dead line: below it in an uptrend, above it in a downtrend
-beyondDead(float c) => upTrend ? c < deadP : c > deadP
+anc  = liveOnly ? aL  : aC
+ancT = liveOnly ? aTL : aTC
+ext  = liveOnly ? xL  : xC
+extT = liveOnly ? xTL : xTC
+dirN = liveOnly ? dL  : dC
+upTrend = dirN == 1
+valid   = not na(anc) and not na(ext) and anc != ext
 
-// Has any CLOSED candle since the latest extreme closed beyond the dead line?
-deadCount() =>
-    int n = 0
-    float firstT = na
-    if not na(lastT) and not na(deadP)
-        for i = (barstate.isconfirmed ? 0 : 1) to 1500
-            if na(time[i]) or time[i] < lastT
-                break
-            if beyondDead(close[i])
-                n += 1
-                firstT := time[i]
-    [n, firstT]
-var bool isDead = false
-var float deadFirstT = na
+// level l: 0 at the extreme, 1 at the anchor, negative = extension past the extreme
+lvl(float l) => ext + l * (anc - ext)
+deadP = lvl(lvDead)
+atr   = ta.atr(14)
+
+// ───── Rules, bar by bar on the chart ─────
+var bool  deadLeg = false
+var bool  touched = false
+var bool  fired   = false
+newLeg = extT != extT[1] or ancT != ancT[1] or dirN != dirN[1]
+if newLeg
+    deadLeg := false, touched := false, fired := false
+
+beyondDead = upTrend ? close < deadP : close > deadP
+if valid and barstate.isconfirmed and beyondDead
+    deadLeg := true
+deadNow = valid and barstate.isconfirmed and beyondDead and not beyondDead[1]
+
+zoneEdge = lvl(lvB)                               // the 0.5 level, where the golden zone starts
+if valid and (upTrend ? low <= zoneEdge : high >= zoneEdge)
+    touched := true
+
+var float sE = na
+var float sS = na
+var float sT1 = na
+var float sT2 = na
+var float sRR = na
+var int   sDir = 0
+var int   sT = na
+var string sState = ""
+
+buySig = false
+sellSig = false
+if valid and touched and not fired and not deadLeg and barstate.isconfirmed
+    if upTrend and showBuy and close > open and close > high[1] and close > deadP
+        e = close
+        s = deadP - stopAtr * nz(atr)
+        t1 = lvl(0.0)
+        rr = (t1 - e) / (e - s)
+        if e > s and rr >= minRR
+            buySig := true
+            fired := true
+            sE := e, sS := s, sT1 := t1, sT2 := lvl(ext1), sRR := rr, sDir := 1, sT := time, sState := "OPEN"
+    if not upTrend and showSell and close < open and close < low[1] and close < deadP
+        e = close
+        s = deadP + stopAtr * nz(atr)
+        t1 = lvl(0.0)
+        rr = (e - t1) / (s - e)
+        if s > e and rr >= minRR
+            sellSig := true
+            fired := true
+            sE := e, sS := s, sT1 := t1, sT2 := lvl(ext1), sRR := rr, sDir := -1, sT := time, sState := "OPEN"
+
+// track the last signal's outcome (stop is checked first: a candle that hits both counts as a stop)
+if sDir != 0 and not na(sT) and time > sT and (sState == "OPEN" or sState == "T1 HIT")
+    if sDir == 1
+        if low <= sS
+            sState := sState == "T1 HIT" ? "T1 HIT, then stopped" : "STOPPED"
+        else if high >= sT2
+            sState := "T2 HIT"
+        else if high >= sT1 and sState == "OPEN"
+            sState := "T1 HIT"
+    else
+        if high >= sS
+            sState := sState == "T1 HIT" ? "T1 HIT, then stopped" : "STOPPED"
+        else if low <= sT2
+            sState := "T2 HIT"
+        else if low <= sT1 and sState == "OPEN"
+            sState := "T1 HIT"
+
+plotshape(buySig, "BUY", shape.labelup, location.belowbar, color.new(#089981, 0), text = "BUY", textcolor = color.white, size = size.small)
+plotshape(sellSig, "SELL", shape.labeldown, location.abovebar, color.new(#f23645, 0), text = "SELL", textcolor = color.white, size = size.small)
+plotshape(deadNow, "DEAD close", shape.xcross, location.belowbar, colDead, size = size.tiny)
 
 // ───── Drawing (rebuilt on the last bar) ─────
 var array<line>  lns = array.new<line>()
@@ -82,71 +191,80 @@ var array<label> lbs = array.new<label>()
 var box gz = na
 var box dz = na
 var line conn = na
+var table tb = table.new(position.top_right, 2, 7, bgcolor = color.new(#131722, 5), border_width = 1, border_color = color.new(color.gray, 70))
 
-clearAll() =>
+startT = math.min(ancT, extT)
+
+drawLevel(float l, color c, int w, string tag) =>
+    p = lvl(l)
+    array.push(lns, line.new(startT, p, time, p, xloc = xloc.bar_time, extend = extendR ? extend.right : extend.none, color = c, width = w))
+    if showLbl
+        array.push(lbs, label.new(time, p, tag + str.tostring(l) + "  (" + str.tostring(p, format.mintick) + ")", xloc = xloc.bar_time,
+             style = label.style_label_left, color = color.new(color.black, 100), textcolor = c, size = size.small))
+
+f(float v) => str.tostring(v, format.mintick)
+
+if barstate.islast and valid
     for l in lns
         line.delete(l)
     for b in lbs
         label.delete(b)
     array.clear(lns)
     array.clear(lbs)
-
-drawLevel(float l, color c, int w) =>
-    p = lvlPrice(l)
-    ln = line.new(startT, p, time, p, xloc = xloc.bar_time, extend = extendR ? extend.right : extend.none, color = c, width = w)
-    array.push(lns, ln)
-    if showLbl
-        lb = label.new(time, p, str.tostring(l) + "  (" + str.tostring(p, format.mintick) + ")", xloc = xloc.bar_time,
-             style = label.style_label_left, color = color.new(color.black, 100), textcolor = c, size = size.small)
-        array.push(lbs, lb)
-
-if barstate.islast and not na(hi) and not na(lo) and rng > 0
-    [dN, dT] = deadCount()
-    isDead := dN > 0
-    deadFirstT := dT
-    clearAll()
     box.delete(gz)
-    line.delete(conn)
-    drawLevel(lvA, colLine, lineW)
-    drawLevel(lvB, colGZLine, lineW)
-    drawLevel(lvC, colGZLine, lineW)
-    drawLevel(lvD, colLine, lineW)
-    gzTop = math.max(lvlPrice(lvB), lvlPrice(lvC))
-    gzBot = math.min(lvlPrice(lvB), lvlPrice(lvC))
-    gz := box.new(startT, gzTop, time, gzBot, xloc = xloc.bar_time, extend = extendR ? extend.right : extend.none,
-         bgcolor = colGZ, border_color = color.new(colGZ, 100))
-    if show618
-        drawLevel(lv618, col618, lineW)
-    // DEAD ZONE: the 0.786 line and the area from it to 1
     box.delete(dz)
-    dz := box.new(startT, math.max(deadP, lvlPrice(lvD)), time, math.min(deadP, lvlPrice(lvD)), xloc = xloc.bar_time,
+    line.delete(conn)
+    drawLevel(0.0, colLine, lineW, "T1 ")
+    drawLevel(lvB, colGZLine, lineW, "")
+    drawLevel(lvC, colGZLine, lineW, "")
+    drawLevel(1.0, colLine, lineW, "")
+    if show618
+        drawLevel(lv618, col618, lineW, "")
+    if showExt
+        drawLevel(ext1, colExt, lineW, "T2 ")
+        drawLevel(ext2, colExt, lineW, "")
+    gz := box.new(startT, math.max(lvl(lvB), lvl(lvC)), time, math.min(lvl(lvB), lvl(lvC)), xloc = xloc.bar_time,
+         extend = extendR ? extend.right : extend.none, bgcolor = colGZ, border_color = color.new(colGZ, 100))
+    dz := box.new(startT, math.max(deadP, lvl(1.0)), time, math.min(deadP, lvl(1.0)), xloc = xloc.bar_time,
          extend = extendR ? extend.right : extend.none, bgcolor = colDeadBg, border_color = color.new(colDeadBg, 100))
-    array.push(lns, line.new(startT, deadP, time, deadP, xloc = xloc.bar_time, extend = extendR ? extend.right : extend.none,
-         color = colDead, width = lineW + 1, style = line.style_solid))
-    string deadHead = "DEAD ZONE " + str.tostring(lvDead) + " (" + str.tostring(deadP, format.mintick) + "): "
-    string deadTxt = deadHead + (isDead ? "CLOSED " + (upTrend ? "BELOW" : "ABOVE") + " — setup dead" : "a close " + (upTrend ? "below" : "above") + " kills the setup")
+    array.push(lns, line.new(startT, deadP, time, deadP, xloc = xloc.bar_time, extend = extendR ? extend.right : extend.none, color = colDead, width = lineW + 1))
+    string deadTxt = "DEAD ZONE " + str.tostring(lvDead) + " (" + f(deadP) + "): " + (deadLeg ? "CLOSED " + (upTrend ? "BELOW" : "ABOVE") + " — setup dead" : "a close " + (upTrend ? "below" : "above") + " kills the setup")
     array.push(lbs, label.new(time, deadP, deadTxt, xloc = xloc.bar_time, style = label.style_label_left,
-         color = isDead ? colDead : color.new(color.black, 100), textcolor = isDead ? color.white : colDead, size = size.small))
-    if isDead and not na(deadFirstT)
-        array.push(lbs, label.new(int(deadFirstT), deadP, "✕ dead", xloc = xloc.bar_time,
-             style = upTrend ? label.style_label_up : label.style_label_down, color = colDead, textcolor = color.white, size = size.tiny))
-    // dashed connector from the first swing point to the latest one (shows direction)
-    if upTrend
-        conn := line.new(loT, lo, hiT, hi, xloc = xloc.bar_time, color = colSwing, style = line.style_dashed, width = 1)
-    else
-        conn := line.new(hiT, hi, loT, lo, xloc = xloc.bar_time, color = colSwing, style = line.style_dashed, width = 1)
-    array.push(lbs, label.new(time, lvlPrice(lvD), tfName + " Fib (" + str.tostring(lookback) + " bars): " + (upTrend ? "UPTREND (0 at high)" : "DOWNTREND (0 at low)") + (isDead ? " · DEAD" : ""),
-         xloc = xloc.bar_time, style = label.style_label_lower_left, color = color.new(color.black, 100),
-         textcolor = upTrend ? #089981 : #f23645, size = size.small))
+         color = deadLeg ? colDead : color.new(color.black, 100), textcolor = deadLeg ? color.white : colDead, size = size.small))
+    conn := line.new(ancT, anc, extT, ext, xloc = xloc.bar_time, color = colSwing, style = line.style_dashed, width = 1)
+
+    if showTbl
+        inZone = close <= math.max(lvl(lvB), lvl(lvC)) and close >= math.min(lvl(lvB), lvl(lvC))
+        string status = deadLeg ? "DEAD: closed beyond 0.786, wait for a new " + (upTrend ? "high" : "low") : fired and sState == "OPEN" ? (sDir == 1 ? "BUY active" : "SELL active") : inZone ? "IN GOLDEN ZONE: wait for a " + (upTrend ? "green close above the prior high" : "red close below the prior low") : touched ? "Touched the zone: wait for the confirmation candle" : "Waiting for a pullback to " + f(lvl(lvB)) + " – " + f(lvl(lvC))
+        color stCol = deadLeg ? colDead : fired and sState == "OPEN" ? (sDir == 1 ? #089981 : #f23645) : inZone ? #b8860b : color.gray
+        color hdCol = upTrend ? color.new(#089981, 30) : color.new(#f23645, 30)
+        table.cell(tb, 0, 0, tfName + " Fib", text_color = color.white, text_size = size.small, bgcolor = hdCol)
+        table.cell(tb, 1, 0, (upTrend ? "UPTREND " : "DOWNTREND ") + f(anc) + " → " + f(ext), text_color = color.white, text_size = size.small, bgcolor = hdCol)
+        table.cell(tb, 0, 1, "Golden zone", text_color = color.silver, text_size = size.small)
+        table.cell(tb, 1, 1, f(lvl(lvB)) + " – " + f(lvl(lvC)) + (show618 ? "  (0.618 " + f(lvl(lv618)) + ")" : ""), text_color = color.white, text_size = size.small)
+        table.cell(tb, 0, 2, "Dead line", text_color = color.silver, text_size = size.small)
+        table.cell(tb, 1, 2, f(deadP), text_color = colDead, text_size = size.small)
+        table.cell(tb, 0, 3, "Targets", text_color = color.silver, text_size = size.small)
+        table.cell(tb, 1, 3, "T1 " + f(lvl(0.0)) + " · T2 " + f(lvl(ext1)), text_color = colExt, text_size = size.small)
+        table.cell(tb, 0, 4, "Status", text_color = color.silver, text_size = size.small)
+        table.cell(tb, 1, 4, status, text_color = color.white, bgcolor = color.new(stCol, 20), text_size = size.small)
+        if sDir != 0
+            table.cell(tb, 0, 5, "Last signal", text_color = color.silver, text_size = size.small)
+            table.cell(tb, 1, 5, (sDir == 1 ? "BUY " : "SELL ") + str.format_time(sT, "dd MMM HH:mm", syminfo.timezone) + " · " + sState, text_color = color.white, text_size = size.small)
+            table.cell(tb, 0, 6, "Plan", text_color = color.silver, text_size = size.small)
+            table.cell(tb, 1, 6, "E " + f(sE) + " · S " + f(sS) + " · T1 " + f(sT1) + " · T2 " + f(sT2) + " · R:R " + str.tostring(sRR, "#.#"), text_color = color.white, text_size = size.small)
 
 // Data window / alerts
-plot(lvlPrice(lvB), "Golden zone 0.5", display = display.data_window)
-plot(lvlPrice(lvC), "Golden zone 0.7", display = display.data_window)
-plot(upTrend ? 1 : -1, "Trend (1 up, -1 down)", display = display.data_window)
-inGZ = close <= math.max(lvlPrice(lvB), lvlPrice(lvC)) and close >= math.min(lvlPrice(lvB), lvlPrice(lvC))
-alertcondition(inGZ and not inGZ[1], "Price entered golden zone", "{{ticker}} entered the fib golden zone")
+plot(lvl(lvB), "Golden zone 0.5", display = display.data_window)
+plot(lvl(lvC), "Golden zone 0.7", display = display.data_window)
 plot(deadP, "Dead zone 0.786", display = display.data_window)
-plot(isDead ? 1 : 0, "Dead (1 = closed beyond 0.786)", display = display.data_window)
-// fires on the candle that CLOSES beyond 0.786 (set the alert to "Once per bar close")
-deadClose = beyondDead(close) and not beyondDead(close[1])
-alertcondition(deadClose, "Candle closed in the DEAD ZONE (beyond 0.786)", "{{ticker}} closed beyond the fib 0.786: setup dead")
+plot(upTrend ? 1 : -1, "Trend (1 up, -1 down)", display = display.data_window)
+plot(ext, "0 (extreme)", display = display.data_window)
+plot(anc, "1 (anchor)", display = display.data_window)
+plot(deadLeg ? 1 : 0, "Dead (1 = closed beyond 0.786)", display = display.data_window)
+plot(buySig ? 1 : 0, "BUY signal", display = display.data_window)
+inGZ = close <= math.max(lvl(lvB), lvl(lvC)) and close >= math.min(lvl(lvB), lvl(lvC))
+alertcondition(inGZ and not inGZ[1], "Price entered golden zone", "{{ticker}} entered the fib golden zone")
+alertcondition(deadNow, "Candle closed in the DEAD ZONE (beyond 0.786)", "{{ticker}} closed beyond the fib 0.786: setup dead")
+alertcondition(buySig, "Fib BUY (golden zone confirmed)", "{{ticker}} fib BUY: golden zone pullback confirmed")
+alertcondition(sellSig, "Fib SELL (golden zone confirmed)", "{{ticker}} fib SELL: golden zone bounce confirmed")
