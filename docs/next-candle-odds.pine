@@ -1,0 +1,231 @@
+//@version=6
+indicator("Next Candle Odds (quant)", shorttitle = "Next Odds", overlay = true, max_lines_count = 30, max_boxes_count = 10, max_labels_count = 20, max_bars_back = 500)
+// Trade probabilities, not predictions.
+// The indicator does not guess the next candle. It looks at every past candle that was in the SAME STATE as the
+// last closed candle and counts what the candle after it did.
+//   STATE (12 kinds) = momentum (close vs a rising / falling EMA: up, none, down)
+//                    x price vs VWAP (intraday) or the 50 EMA (daily and above): above / below
+//                    x volume vs its average: high / low
+//   OUTCOME of the next candle, in ATR (14) units: UP if it closed more than "Flat" x ATR higher, DOWN if lower,
+//                    FLAT in between.
+//   It learns bar by bar: every candle only uses the candles before it (no look-ahead, no repaint on closed bars).
+// Shown for the current state: P(up / flat / down), the base rate over all states, the expected move (the average
+// next-candle change = expected value per candle for a long), the next candle's likely range (25-75% and 10-90% of
+// past outcomes) and a fan of where price sat N candles later. TRACK RECORD: each time the odds said "up" at or above
+// the call threshold, did it go up? That is the honest check of whether the odds mean anything.
+// Few samples (under "Min samples") = thin: treat the numbers as noise.
+
+grpM = "Model"
+emaLen  = input.int(20, "Momentum EMA length", minval = 2, group = grpM)
+volLen  = input.int(20, "Volume average length", minval = 2, group = grpM)
+flatK   = input.float(0.1, "Flat if the move is under (x ATR)", minval = 0, step = 0.05, group = grpM)
+horizon = input.int(5, "Fan: candles ahead", minval = 2, maxval = 50, group = grpM)
+memory  = input.int(400, "Outcomes remembered per state (for the ranges)", minval = 50, maxval = 2000, group = grpM)
+minN    = input.int(30, "Min samples to trust a state", minval = 5, group = grpM)
+callThr = input.float(55, "Track record: a call is P at or above (%)", minval = 50, maxval = 95, group = grpM)
+
+grpD = "Display"
+showCone = input.bool(true, "Show the next-candle range and the fan", group = grpD)
+showTbl  = input.bool(true, "Show the odds table", group = grpD)
+tblPosIn = input.string("Top right", "Table position", options = ["Top right", "Bottom right", "Top left", "Bottom left"], group = grpD)
+colUp    = input.color(color.new(#089981, 0), "Up", group = grpD)
+colDn    = input.color(color.new(#f23645, 0), "Down", group = grpD)
+colFlat  = input.color(color.new(#787b86, 0), "Flat", group = grpD)
+colCone  = input.color(color.new(#00bcd4, 0), "Range / fan", group = grpD)
+
+// ───── State of a candle ─────
+atr   = ta.atr(14)
+ema   = ta.ema(close, emaLen)
+mom   = close > ema and ema >= ema[3] ? 1 : close < ema and ema <= ema[3] ? -1 : 0
+ref   = timeframe.isintraday ? ta.vwap(hlc3) : ta.ema(close, 50)
+above = close > ref
+volHi = volume > ta.sma(volume, volLen)
+state = (mom + 1) * 4 + (above ? 2 : 0) + (volHi ? 1 : 0)
+
+stateName(int s) =>
+    int m = math.floor(s / 4) - 1
+    int rest = s % 4
+    string refName = timeframe.isintraday ? "VWAP" : "50 EMA"
+    (m > 0 ? "Momentum UP" : m < 0 ? "Momentum DOWN" : "No momentum") + " · " + (rest >= 2 ? "above " : "below ") + refName + " · " + (rest % 2 == 1 ? "volume HIGH" : "volume low")
+
+// ───── Online statistics (learned bar by bar) ─────
+var array<int>   cUp = array.new<int>(12, 0)
+var array<int>   cDn = array.new<int>(12, 0)
+var array<int>   cFl = array.new<int>(12, 0)
+var array<float> sumR = array.new<float>(12, 0.0)
+var matrix<float> m1 = matrix.new<float>(12, memory, na)    // next-candle outcomes (ATR units)
+var array<int>   w1 = array.new<int>(12, 0)
+var matrix<float> mH = matrix.new<float>(12, memory, na)    // outcomes `horizon` candles later
+var array<int>   wH = array.new<int>(12, 0)
+var int totUp = 0
+var int totDn = 0
+var int totFl = 0
+var int   prevState = na
+var float prevClose = na
+var float prevAtr = na
+var float predUp = na          // odds made at the last close, for the candle after it
+var float predDn = na
+var bool  predOk = false        // enough samples behind that call
+var int nCallUp = 0
+var int hitUp = 0
+var int nCallDn = 0
+var int hitDn = 0
+var array<int>   hs = array.new<int>()
+var array<float> hc = array.new<float>()
+var array<float> ha = array.new<float>()
+
+if barstate.isconfirmed and not na(atr) and not na(ema)
+    if not na(prevState) and prevAtr > 0
+        float r = (close - prevClose) / prevAtr
+        bool up = r > flatK
+        bool dn = r < -flatK
+        // track record of the call made at the previous close
+        if predOk and predUp * 100 >= callThr
+            nCallUp += 1
+            hitUp += up ? 1 : 0
+        if predOk and predDn * 100 >= callThr
+            nCallDn += 1
+            hitDn += dn ? 1 : 0
+        // learn
+        cUp.set(prevState, cUp.get(prevState) + (up ? 1 : 0))
+        cDn.set(prevState, cDn.get(prevState) + (dn ? 1 : 0))
+        cFl.set(prevState, cFl.get(prevState) + (not up and not dn ? 1 : 0))
+        sumR.set(prevState, sumR.get(prevState) + r)
+        m1.set(prevState, w1.get(prevState) % memory, r)
+        w1.set(prevState, w1.get(prevState) + 1)
+        totUp += up ? 1 : 0
+        totDn += dn ? 1 : 0
+        totFl += not up and not dn ? 1 : 0
+    // the candle `horizon` bars ago: where price is now, in its ATR
+    hs.push(state), hc.push(close), ha.push(atr)
+    if hs.size() > horizon
+        int s0 = hs.shift()
+        float c0 = hc.shift()
+        float a0 = ha.shift()
+        if a0 > 0
+            mH.set(s0, wH.get(s0) % memory, (close - c0) / a0)
+            wH.set(s0, wH.get(s0) + 1)
+    prevState := state
+    prevClose := close
+    prevAtr := atr
+    // the odds for the next candle, from this candle's state
+    int n = cUp.get(state) + cDn.get(state) + cFl.get(state)
+    predUp := n > 0 ? float(cUp.get(state)) / n : na
+    predDn := n > 0 ? float(cDn.get(state)) / n : na
+    predOk := n >= minN
+
+quantiles(matrix<float> m, int s) =>
+    vals = array.new<float>()
+    for v in m.row(s)
+        if not na(v)
+            vals.push(v)
+    float q10 = na
+    float q25 = na
+    float q50 = na
+    float q75 = na
+    float q90 = na
+    if vals.size() >= 5
+        q10 := vals.percentile_linear_interpolation(10)
+        q25 := vals.percentile_linear_interpolation(25)
+        q50 := vals.percentile_linear_interpolation(50)
+        q75 := vals.percentile_linear_interpolation(75)
+        q90 := vals.percentile_linear_interpolation(90)
+    [q10, q25, q50, q75, q90]
+
+pct(float p) => na(p) ? "—" : str.tostring(p * 100, "#") + "%"
+bar(float p) =>
+    int k = na(p) ? 0 : int(math.round(p * 10))
+    str.repeat("█", k) + str.repeat("░", 10 - k)
+f(float v) => str.tostring(v, format.mintick)
+
+// ───── Drawing (last bar) ─────
+var array<line>     lns = array.new<line>()
+var array<box>      bxs = array.new<box>()
+var array<label>    lbs = array.new<label>()
+var array<linefill> lfs = array.new<linefill>()
+pos = tblPosIn == "Bottom right" ? position.bottom_right : tblPosIn == "Top left" ? position.top_left : tblPosIn == "Bottom left" ? position.bottom_left : position.top_right
+var table tb = table.new(pos, 2, 11, bgcolor = color.new(#0b0e14, 0), border_width = 1, border_color = color.new(color.gray, 75))
+
+float pUp = na
+float pDn = na
+float evR = na
+if barstate.islast and not na(prevState)
+    for x in lns
+        line.delete(x)
+    for x in bxs
+        box.delete(x)
+    for x in lbs
+        label.delete(x)
+    for x in lfs
+        linefill.delete(x)
+    lns.clear(), bxs.clear(), lbs.clear(), lfs.clear()
+    int s = prevState
+    int n = cUp.get(s) + cDn.get(s) + cFl.get(s)
+    pUp := n > 0 ? float(cUp.get(s)) / n : na
+    pDn := n > 0 ? float(cDn.get(s)) / n : na
+    float pFl = n > 0 ? float(cFl.get(s)) / n : na
+    evR := n > 0 ? sumR.get(s) / n : na
+    int tot = totUp + totDn + totFl
+    float bUp = tot > 0 ? float(totUp) / tot : na
+    float bDn = tot > 0 ? float(totDn) / tot : na
+    bool thin = n < minN
+    [a10, a25, a50, a75, a90] = quantiles(m1, s)
+    [h10, h25, h50, h75, h90] = quantiles(mH, s)
+    float base = prevClose
+    float a = prevAtr
+    int nx = barstate.isconfirmed ? bar_index + 1 : bar_index      // the candle the odds are for
+    if showCone and not na(a10)
+        // next candle: 10-90% (light) and 25-75% (darker) ranges, median line
+        bxs.push(box.new(nx, base + a90 * a, nx + 1, base + a10 * a, bgcolor = color.new(colCone, 85), border_color = color.new(colCone, 100)))
+        bxs.push(box.new(nx, base + a75 * a, nx + 1, base + a25 * a, bgcolor = color.new(colCone, 60), border_color = colCone))
+        lns.push(line.new(nx, base + a50 * a, nx + 1, base + a50 * a, color = color.white, width = 2))
+    if showCone and not na(h10)
+        int x2 = bar_index + horizon
+        l10 = line.new(bar_index, base, x2, base + h10 * a, color = color.new(colCone, 50), style = line.style_dotted)
+        l25 = line.new(bar_index, base, x2, base + h25 * a, color = color.new(colCone, 30))
+        l50 = line.new(bar_index, base, x2, base + h50 * a, color = color.white, width = 2, style = line.style_dashed)
+        l75 = line.new(bar_index, base, x2, base + h75 * a, color = color.new(colCone, 30))
+        l90 = line.new(bar_index, base, x2, base + h90 * a, color = color.new(colCone, 50), style = line.style_dotted)
+        lns.push(l10), lns.push(l25), lns.push(l50), lns.push(l75), lns.push(l90)
+        lfs.push(linefill.new(l10, l90, color.new(colCone, 92)))
+        lfs.push(linefill.new(l25, l75, color.new(colCone, 82)))
+        lbs.push(label.new(x2, base + h90 * a, "90%  " + f(base + h90 * a), style = label.style_label_left, color = color.new(#0b0e14, 0), textcolor = colCone, size = size.small, text_formatting = text.format_bold))
+        lbs.push(label.new(x2, base + h50 * a, "median  " + f(base + h50 * a), style = label.style_label_left, color = color.new(#0b0e14, 0), textcolor = color.white, size = size.small, text_formatting = text.format_bold))
+        lbs.push(label.new(x2, base + h10 * a, "10%  " + f(base + h10 * a), style = label.style_label_left, color = color.new(#0b0e14, 0), textcolor = colCone, size = size.small, text_formatting = text.format_bold))
+
+    if showTbl
+        color tx = color.white
+        color mute = color.silver
+        table.cell(tb, 0, 0, "NEXT CANDLE", text_color = tx, text_size = size.small, bgcolor = color.new(colCone, 40), text_formatting = text.format_bold)
+        table.cell(tb, 1, 0, stateName(s), text_color = tx, text_size = size.small, bgcolor = color.new(colCone, 40), text_formatting = text.format_bold)
+        table.cell(tb, 0, 1, "UP", text_color = colUp, text_size = size.small, text_formatting = text.format_bold)
+        table.cell(tb, 1, 1, bar(pUp) + "  " + pct(pUp), text_color = colUp, text_size = size.small, text_formatting = text.format_bold)
+        table.cell(tb, 0, 2, "FLAT", text_color = colFlat, text_size = size.small, text_formatting = text.format_bold)
+        table.cell(tb, 1, 2, bar(pFl) + "  " + pct(pFl), text_color = colFlat, text_size = size.small, text_formatting = text.format_bold)
+        table.cell(tb, 0, 3, "DOWN", text_color = colDn, text_size = size.small, text_formatting = text.format_bold)
+        table.cell(tb, 1, 3, bar(pDn) + "  " + pct(pDn), text_color = colDn, text_size = size.small, text_formatting = text.format_bold)
+        float edge = na(pUp) or na(bUp) ? na : (pUp - bUp) * 100
+        table.cell(tb, 0, 4, "Base rate (all states)", text_color = mute, text_size = size.small)
+        table.cell(tb, 1, 4, "up " + pct(bUp) + " · down " + pct(bDn) + (na(edge) ? "" : "   edge " + (edge >= 0 ? "+" : "") + str.tostring(edge, "#.#") + " pts up"), text_color = tx, text_size = size.small)
+        table.cell(tb, 0, 5, "Expected move (EV)", text_color = mute, text_size = size.small)
+        table.cell(tb, 1, 5, na(evR) ? "—" : (evR >= 0 ? "+" : "") + str.tostring(evR, "#.##") + " ATR  (" + (evR >= 0 ? "+" : "") + f(evR * a) + ")", text_color = na(evR) ? tx : evR >= 0 ? colUp : colDn, text_size = size.small, text_formatting = text.format_bold)
+        table.cell(tb, 0, 6, "Next candle close", text_color = mute, text_size = size.small)
+        table.cell(tb, 1, 6, na(a25) ? "—" : "50%: " + f(base + a25 * a) + " – " + f(base + a75 * a) + "   80%: " + f(base + a10 * a) + " – " + f(base + a90 * a), text_color = tx, text_size = size.small)
+        table.cell(tb, 0, 7, "In " + str.tostring(horizon) + " candles", text_color = mute, text_size = size.small)
+        table.cell(tb, 1, 7, na(h50) ? "—" : "median " + f(base + h50 * a) + "   80%: " + f(base + h10 * a) + " – " + f(base + h90 * a), text_color = tx, text_size = size.small)
+        table.cell(tb, 0, 8, "Sample", text_color = mute, text_size = size.small)
+        table.cell(tb, 1, 8, str.tostring(n) + " past candles in this state" + (thin ? "  ·  THIN: treat as noise" : ""), text_color = thin ? colDn : tx, text_size = size.small)
+        table.cell(tb, 0, 9, "Track record UP calls", text_color = mute, text_size = size.small)
+        table.cell(tb, 1, 9, nCallUp == 0 ? "no calls at " + str.tostring(callThr, "#") + "%+ yet" : "said ≥" + str.tostring(callThr, "#") + "% up " + str.tostring(nCallUp) + "x · went up " + str.tostring(100.0 * hitUp / nCallUp, "#") + "%", text_color = tx, text_size = size.small)
+        table.cell(tb, 0, 10, "Track record DOWN calls", text_color = mute, text_size = size.small)
+        table.cell(tb, 1, 10, nCallDn == 0 ? "no calls at " + str.tostring(callThr, "#") + "%+ yet" : "said ≥" + str.tostring(callThr, "#") + "% down " + str.tostring(nCallDn) + "x · went down " + str.tostring(100.0 * hitDn / nCallDn, "#") + "%", text_color = tx, text_size = size.small)
+
+// data window
+plot(predUp * 100, "P(up) next candle %", display = display.data_window)
+plot(predDn * 100, "P(down) next candle %", display = display.data_window)
+plot(nCallUp, "Up calls made", display = display.data_window)
+plot(nCallUp > 0 ? 100.0 * hitUp / nCallUp : na, "Up calls right %", display = display.data_window)
+plot(nCallDn, "Down calls made", display = display.data_window)
+plot(nCallDn > 0 ? 100.0 * hitDn / nCallDn : na, "Down calls right %", display = display.data_window)
+alertcondition(predOk and predUp * 100 >= callThr and barstate.isconfirmed, "Odds: UP at or above the threshold", "{{ticker}} next-candle odds: UP at or above the threshold")
+alertcondition(predOk and predDn * 100 >= callThr and barstate.isconfirmed, "Odds: DOWN at or above the threshold", "{{ticker}} next-candle odds: DOWN at or above the threshold")
