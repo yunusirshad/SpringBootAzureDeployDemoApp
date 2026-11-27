@@ -14,6 +14,11 @@ indicator("MTF FVG Confluence + EQH/EQL", shorttitle = "FVG MTF", overlay = true
 //   EQH/EQL   equal highs / lows: 2+ unswept swing highs (lows) within "Equal within" x ATR of each other, on each
 //             timeframe, merged across timeframes. Strong = at least "Min touches" or found on 2+ timeframes.
 //             A level is dropped once price trades through it (its liquidity is taken).
+//   STRONG/WEAK HIGH & LOW (swing structure, same method as LuxAlgo SMC): a swing high/low is a bar higher/lower
+//             than the next N bars. A CLOSE above the last swing high makes the trend up, below the last swing low
+//             down. Uptrend: the lowest low since the last swing low is the STRONG LOW (protected) and the highest
+//             high since the last swing high the WEAK HIGH (liquidity likely to be taken). Downtrend: STRONG HIGH and
+//             WEAK LOW.
 
 grpT = "Timeframes"
 tf1 = input.timeframe("15", "Timeframe 1", group = grpT)
@@ -37,12 +42,19 @@ eqTol    = input.float(0.1, "Equal within (x ATR 14 of its timeframe)", minval =
 minTouch = input.int(3, "Min touches (or found on 2+ timeframes)", minval = 2, maxval = 6, group = grpE)
 showEqN  = input.int(2, "Show the strongest N per side", minval = 1, maxval = 5, group = grpE)
 
+grpH = "Strong / weak high & low"
+showHL   = input.bool(true, "Show strong / weak high & low", group = grpH)
+hlTf     = input.timeframe("", "Structure timeframe (empty = the chart's)", group = grpH)
+hlLen    = input.int(50, "Swing length (bars)", minval = 3, maxval = 200, group = grpH, tooltip = "A swing high is a bar higher than the next N bars (LuxAlgo's swing structure uses 50).")
+showWeak = input.bool(true, "Also show the weak high / low", group = grpH)
+
 grpS = "Style"
 colBull = input.color(color.new(#00bcd4, 0), "Bullish FVG", group = grpS)
 colBear = input.color(color.new(#f23645, 0), "Bearish FVG", group = grpS)
 colEqh  = input.color(color.new(#ff9800, 0), "EQH", group = grpS)
 colEql  = input.color(color.new(#2962ff, 0), "EQL", group = grpS)
 lblBg   = input.color(color.new(#0b0e14, 0), "Label background", group = grpS)
+colWeak = input.color(color.new(#787b86, 0), "Weak high / low", group = grpS)
 extendR = input.bool(true, "Extend right", group = grpS)
 
 tfName(string tf) => tf == "D" or tf == "1D" ? "D" : tf == "W" or tf == "1W" ? "W" : tf == "M" or tf == "1M" ? "M" : timeframe.in_seconds(tf) >= 3600 ? str.tostring(timeframe.in_seconds(tf) / 3600) + "H" : str.tostring(timeframe.in_seconds(tf) / 60) + "m"
@@ -146,6 +158,48 @@ tfData(float minA, int keep, int ageMax, float absMax, int pLen, float tolA) =>
 [b2T, b2B, b2M, b2X, s2T, s2B, s2M, s2X, h2P, h2N, h2M, l2P, l2N, l2M] = request.security(syminfo.tickerid, tf2, tfData(minAtr, keepN, maxAge, maxAbs, pivLen, eqTol), lookahead = barmerge.lookahead_off)
 [b3T, b3B, b3M, b3X, s3T, s3B, s3M, s3X, h3P, h3N, h3M, l3P, l3N, l3M] = request.security(syminfo.tickerid, tf3, tfData(minAtr, keepN, maxAge, maxAbs, pivLen, eqTol), lookahead = barmerge.lookahead_off)
 [b4T, b4B, b4M, b4X, s4T, s4B, s4M, s4X, h4P, h4N, h4M, l4P, l4N, l4M] = request.security(syminfo.tickerid, tf4, tfData(minAtr, keepN, maxAge, maxAbs, pivLen, eqTol), lookahead = barmerge.lookahead_off)
+
+// ───── Swing structure: strong / weak high & low (same method as LuxAlgo SMC) ─────
+// Swing high = the bar len bars ago is higher than the len bars after it (a new down leg starts); swing low mirrored.
+// Trend: a CLOSE above the last swing high = up, a CLOSE below the last swing low = down (each swing breaks once).
+// Top = the highest high since the last swing high, bottom = the lowest low since the last swing low.
+// In an uptrend the bottom is the STRONG LOW and the top the WEAK HIGH; in a downtrend the top is the STRONG HIGH
+// and the bottom the WEAK LOW.
+// returns [trend 1 up / -1 down, top, top time, bottom, bottom time]
+structure(int len) =>
+    var int   leg = 0
+    var int   trend = 0
+    var float sh = na
+    var bool  shX = false
+    var float sl = na
+    var bool  slX = false
+    var float top = na
+    var int   topT = na
+    var float bot = na
+    var int   botT = na
+    hh = ta.highest(high, len)
+    ll = ta.lowest(low, len)
+    int newLeg = high[len] > hh ? 0 : low[len] < ll ? 1 : leg
+    if newLeg != leg and bar_index > len
+        if newLeg == 0
+            sh := high[len], shX := false
+            top := high[len], topT := time[len]
+        else
+            sl := low[len], slX := false
+            bot := low[len], botT := time[len]
+        leg := newLeg
+    if not na(top) and high > top
+        top := high, topT := time
+    if not na(bot) and low < bot
+        bot := low, botT := time
+    if not na(sh) and not shX and close > sh
+        trend := 1, shX := true
+    if not na(sl) and not slX and close < sl
+        trend := -1, slX := true
+    [trend, top, topT, bot, botT]
+
+hlTfUse = hlTf == "" ? timeframe.period : hlTf
+[hlTrend, hlTop, hlTopT, hlBot, hlBotT] = request.security(syminfo.tickerid, hlTfUse, structure(hlLen), lookahead = barmerge.lookahead_off)
 
 atrC = ta.atr(14)
 names = array.from(tfName(tf1), tfName(tf2), tfName(tf3), tfName(tf4))
@@ -405,6 +459,19 @@ if barstate.islast
                     lP.push(cP.get(i)), lN.push(cN.get(i)), lF.push(k), lM.push(cM.get(i))
         eqhCount := drawEq(hP, hN, hF, hM, true, colEqh)
         eqlCount := drawEq(lP, lN, lF, lM, false, colEql)
+    if showHL and hlTrend != 0
+        bool up = hlTrend == 1
+        // the protected side is drawn solid and bold; the unprotected side dotted and grey
+        if not na(hlBot) and (up or showWeak)
+            color cb = up ? colBull : colWeak
+            lns.push(line.new(hlBotT, hlBot, time, hlBot, xloc = xloc.bar_time, extend = extendR ? extend.right : extend.none, color = cb, width = up ? 2 : 1, style = up ? line.style_solid : line.style_dotted))
+            lbs.push(label.new(time, hlBot, (up ? "STRONG LOW  " : "Weak Low  ") + f(hlBot), xloc = xloc.bar_time, style = label.style_label_left,
+                 color = lblBg, textcolor = cb, size = up ? size.normal : size.small, text_formatting = text.format_bold))
+        if not na(hlTop) and (not up or showWeak)
+            color ct = up ? colWeak : colBear
+            lns.push(line.new(hlTopT, hlTop, time, hlTop, xloc = xloc.bar_time, extend = extendR ? extend.right : extend.none, color = ct, width = up ? 1 : 2, style = up ? line.style_dotted : line.style_solid))
+            lbs.push(label.new(time, hlTop, (up ? "Weak High  " : "STRONG HIGH  ") + f(hlTop), xloc = xloc.bar_time, style = label.style_label_left,
+                 color = lblBg, textcolor = ct, size = up ? size.small : size.normal, text_formatting = text.format_bold))
 
 // data window (last bar)
 plot(topBullAbs, "Strongest bull FVG absorbed %", display = display.data_window)
@@ -413,6 +480,9 @@ plot(bullFbLo, "Bull x1 fallback low", display = display.data_window)
 plot(bullFbHi, "Bull x1 fallback high", display = display.data_window)
 plot(bearFbLo, "Bear x1 fallback low", display = display.data_window)
 plot(bearFbHi, "Bear x1 fallback high", display = display.data_window)
+plot(hlTrend, "Structure trend (1 up, -1 down)", display = display.data_window)
+plot(hlTop, "Top (strong high in a downtrend, weak high in an uptrend)", display = display.data_window)
+plot(hlBot, "Bottom (strong low in an uptrend, weak low in a downtrend)", display = display.data_window)
 plot(eqhCount, "Strong EQH levels", display = display.data_window)
 plot(eqlCount, "Strong EQL levels", display = display.data_window)
 sz(array<float> a) => na(a) ? 0 : a.size()
