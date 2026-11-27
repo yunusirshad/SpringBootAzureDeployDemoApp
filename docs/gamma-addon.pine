@@ -16,6 +16,13 @@
 //   rallies, so price tends to SPEED UP through that strike (trap door below, squeeze above).
 //   The largest negative strike below and above the price are drawn as solid orange lines with
 //   LARGEST NEGATIVE GAMMA on top.
+// BUY NOW / SELL NOW (closed candles, latest session only, once per level — the gamma list is today's):
+//   BUY NOW  · floor held : the candle dips to the largest +gamma BELOW and closes green, back above it
+//   BUY NOW  · squeeze    : the candle closes above the largest -gamma ABOVE
+//   SELL NOW · ceiling    : the candle tags the largest +gamma ABOVE and closes red, back below it
+//   SELL NOW · trap door  : the candle closes below the largest -gamma BELOW
+//   Each shows the price, a stop just beyond the level and the next gamma line as the target.
+//   Rules from how dealer gamma tends to act, not a backtested edge: confirm with your own read.
 // ════════════════════════════════════════════════════════════════
 grpGm    = "Largest positive / negative gamma (from your options app)"
 gmList   = input.text_area("", "Gamma by strike (strike=gamma, comma separated)", group = grpGm, tooltip = "Paste from your GEX app, e.g.  9=400, 9.5=120, 10=850, 10.5=-300, 11=1200. Positive values give the green / red lines, negative values the orange lines. Update it each morning (open interest changes daily).")
@@ -28,6 +35,9 @@ gmNeg    = input.bool(true, "Also the largest NEGATIVE gamma (below and above)",
 gmColNeg = input.color(#ff9800, "Line negative gamma", group = grpGm)
 gmTxtCol = input.color(color.black, "Text color", group = grpGm)
 gmWidth  = input.int(3, "Line width", 1, 6, group = grpGm)
+gmSig    = input.bool(true, "BUY NOW / SELL NOW signals at the gamma lines", group = grpGm)
+gmTouch  = input.float(0.3, "Touch = within (% of the level)", 0.0, 5.0, 0.05, group = grpGm)
+gmStopP  = input.float(0.5, "Stop beyond the level (%)", 0.05, 10.0, 0.05, group = grpGm)
 
 // the strike with the largest positive gamma above (dir 1) or below (dir -1) the price, within the range
 gmBest(string list, int dir, float px, float rngPct, int sgn = 1) =>
@@ -105,3 +115,53 @@ plot(gmNegBelow, "Largest -gamma below", display = display.data_window)
 plot(gmNegAbove, "Largest -gamma above", display = display.data_window)
 alertcondition(not na(gmNegBelow) and low <= gmNegBelow * 1.005, "Near the largest -gamma below", "{{ticker}} is at the largest negative gamma strike below: drops can speed up ({{close}})")
 alertcondition(not na(gmNegAbove) and high >= gmNegAbove * 0.995, "Near the largest -gamma above", "{{ticker}} is at the largest negative gamma strike above: a breakout can squeeze ({{close}})")
+
+// ─── BUY NOW / SELL NOW at the gamma lines ──────────────────────
+// levels as they stood at the previous close, so a crossing is measured against the right line
+[sPosUp, sPosUpG] = gmBest(gmList, 1, close[1], gmRange)
+[sPosDn, sPosDnG] = gmBest(gmList, -1, close[1], gmRange)
+[sNegDn, sNegDnG] = gmBest(gmList, -1, close[1], gmRange, -1)
+[sNegUp, sNegUpG] = gmBest(gmList, 1, close[1], gmRange, -1)
+bool gmToday = timeframe.isintraday and year(time) == year(last_bar_time) and month(time) == month(last_bar_time) and dayofmonth(time) == dayofmonth(last_bar_time)
+var float gmFiredBuy = na
+var float gmFiredSell = na
+var array<label> gmSigLbls = array.new<label>()
+if ta.change(time("D")) != 0
+    gmFiredBuy := na
+    gmFiredSell := na
+float tch = gmTouch / 100
+bool bFloor = not na(sPosDn) and low <= sPosDn * (1 + tch) and close > sPosDn and close > open
+bool bSqz   = not na(sNegUp) and close > sNegUp and close[1] <= sNegUp
+bool sCeil  = not na(sPosUp) and high >= sPosUp * (1 - tch) and close < sPosUp and close < open
+bool sTrap  = not na(sNegDn) and close < sNegDn and close[1] >= sNegDn
+float bLvl = bFloor ? sPosDn : bSqz ? sNegUp : na
+float sLvl = sCeil ? sPosUp : sTrap ? sNegDn : na
+bool gmBuyNow  = gmSig and gmToday and barstate.isconfirmed and not na(bLvl) and bLvl != nz(gmFiredBuy)
+bool gmSellNow = gmSig and gmToday and barstate.isconfirmed and not na(sLvl) and sLvl != nz(gmFiredSell)
+// next gamma line beyond the price, as the target
+nextAbove(float px) =>
+    float t1 = not na(sPosUp) and sPosUp > px ? sPosUp : na
+    float t2 = not na(sNegUp) and sNegUp > px ? sNegUp : na
+    na(t1) ? t2 : na(t2) ? t1 : math.min(t1, t2)
+nextBelow(float px) =>
+    float t1 = not na(sPosDn) and sPosDn < px ? sPosDn : na
+    float t2 = not na(sNegDn) and sNegDn < px ? sNegDn : na
+    na(t1) ? t2 : na(t2) ? t1 : math.max(t1, t2)
+if gmBuyNow
+    gmFiredBuy := bLvl
+    float st = bLvl * (1 - gmStopP / 100)
+    float tg = nextAbove(close)
+    string why = bFloor ? "floor held at +gamma " : "squeeze through -gamma "
+    gmSigLbls.push(label.new(bar_index, low, "BUY NOW " + str.tostring(close, format.mintick) + "\n" + why + str.tostring(bLvl, format.mintick) + "\nstop " + str.tostring(st, format.mintick) + (na(tg) ? "" : " · target " + str.tostring(tg, format.mintick)), style = label.style_label_up, color = #089981, textcolor = color.white, size = size.small, text_formatting = text.format_bold))
+if gmSellNow
+    gmFiredSell := sLvl
+    float st = sLvl * (1 + gmStopP / 100)
+    float tg = nextBelow(close)
+    string why = sCeil ? "ceiling at +gamma " : "trap door through -gamma "
+    gmSigLbls.push(label.new(bar_index, high, "SELL NOW " + str.tostring(close, format.mintick) + "\n" + why + str.tostring(sLvl, format.mintick) + "\nstop " + str.tostring(st, format.mintick) + (na(tg) ? "" : " · target " + str.tostring(tg, format.mintick)), style = label.style_label_down, color = #f23645, textcolor = color.white, size = size.small, text_formatting = text.format_bold))
+if gmSigLbls.size() > 30
+    gmSigLbls.shift().delete()
+plot(gmBuyNow ? 1 : 0, "Gamma BUY NOW", display = display.data_window)
+plot(gmSellNow ? 1 : 0, "Gamma SELL NOW", display = display.data_window)
+alertcondition(gmBuyNow, "Gamma BUY NOW", "{{ticker}} BUY NOW at a gamma line ({{close}}): floor held or squeeze")
+alertcondition(gmSellNow, "Gamma SELL NOW", "{{ticker}} SELL NOW at a gamma line ({{close}}): ceiling or trap door")

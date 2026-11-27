@@ -38,6 +38,15 @@ Use the same chain the GEX levels use (all expiries in the next 45 days, up to 8
 - Make sure the copy line keeps BOTH positive and negative values (the indicator needs the negatives for the orange lines).
 - Add the same line to the API: `GET /api/v1/gamma/{ticker}` returns the line as plain text, and `/api/v1/gex` adds a field `gammaString` per stock.
 
+## BUY NOW / SELL NOW at the gamma lines (same rules as the TradingView indicator)
+Check on every closed 5-minute candle of today's session, using the four levels as they stood at the previous candle's close. Fire each signal once per level per day.
+- **BUY NOW · floor held**: the candle's low comes within 0.3% of the largest POSITIVE gamma below, and it closes green (close > open) back above that strike.
+- **BUY NOW · squeeze**: the candle closes above the largest NEGATIVE gamma above (the previous close was at or below it).
+- **SELL NOW · ceiling**: the candle's high comes within 0.3% of the largest POSITIVE gamma above, and it closes red back below that strike.
+- **SELL NOW · trap door**: the candle closes below the largest NEGATIVE gamma below (the previous close was at or above it).
+- With each signal show: the price, the level, a stop 0.5% beyond the level (below for buys, above for sells), and the target = the next gamma line (positive or negative) beyond the price.
+- Show the latest signal next to the stock ("BUY NOW 9.42 · floor held at +gamma 9.30 · stop 9.25 · target 9.50") and push an alert. These rules come from how dealer gamma tends to act; they are not a backtested edge, so label them "confirm with your own read".
+
 ## When it updates
 - With the option chain: once a day at 8:00 AM ET (open interest updates overnight). Show "as of" with the date and time it was built.
 
