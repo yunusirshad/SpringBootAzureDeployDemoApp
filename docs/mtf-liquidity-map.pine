@@ -1,5 +1,5 @@
 //@version=6
-indicator("MTF Liquidity Map + Absorption + Orders", "MTF Liq Abs", overlay = true, max_lines_count = 500, max_labels_count = 200, max_boxes_count = 400)
+indicator("MTF Liquidity Map + Absorption + Orders", "MTF Liq Abs", overlay = true, max_lines_count = 500, max_labels_count = 500, max_boxes_count = 400)
 
 // ════════════════════════════════════════════════════════════════
 // MTF Liquidity Map + Absorption — every level is sourced from a FIXED
@@ -9,6 +9,10 @@ indicator("MTF Liquidity Map + Absorption + Orders", "MTF Liq Abs", overlay = tr
 //           New York session H-L (9:30-16:00 ET) and New York
 //           premarket H-L (04:00-09:30 ET; needs extended hours on).
 // Only SOLID (2×+) and STRONG (3×+) liquidity is drawn.
+// Touch labels (closed candles, once per type per level):
+//   GRAB  · wick into the stop band, closes back  → part of the stops taken, rejected
+//   SWEEP · wick through the WHOLE band, closes back → all stops hunted, reversal watch
+//   RUN   · closes beyond the level → liquidity run, price accepted past it (continuation)
 // Layer 2 · HTF swing heatmap (blue): 1H / 4H / Daily swing highs/lows,
 //           weighted by volume × timeframe weight, decayed by real time.
 //
@@ -27,80 +31,89 @@ indicator("MTF Liquidity Map + Absorption + Orders", "MTF Liq Abs", overlay = tr
 
 // ─── Inputs ─────────────────────────────────────────────────────
 grpK   = "Key levels"
-showD  = input.bool(true, "Previous day high/low", group = grpK)
-showW  = input.bool(true, "Previous week high/low", group = grpK)
-showM  = input.bool(true, "Previous month high/low", group = grpK)
-showNY  = input.bool(true, "New York session high/low (previous session)", group = grpK, tooltip = "Skipped when it is the same price as PDH/PDL (normal on stocks).")
-showPre = input.bool(true, "New York premarket high/low", group = grpK, tooltip = "Needs extended trading hours turned on for the chart.")
-sessNY  = input.session("0930-1600", "New York session", group = grpK)
-sessPre = input.session("0400-0930", "New York premarket", group = grpK)
-tz     = input.string("America/New_York", "Session timezone", group = grpK)
-keyCol = input.color(#ff9f1a, "Key level color", group = grpK)
+showD  = input.bool(true, "Previous day high/low", group = grpK, display = display.none)
+showW  = input.bool(true, "Previous week high/low", group = grpK, display = display.none)
+showM  = input.bool(true, "Previous month high/low", group = grpK, display = display.none)
+showNY  = input.bool(true, "New York session high/low (previous session)", group = grpK, tooltip = "Skipped when it is the same price as PDH/PDL (normal on stocks).", display = display.none)
+showPre = input.bool(true, "New York premarket high/low", group = grpK, tooltip = "Needs extended trading hours turned on for the chart.", display = display.none)
+sessNY  = input.session("0930-1600", "New York session", group = grpK, display = display.none)
+sessPre = input.session("0400-0930", "New York premarket", group = grpK, display = display.none)
+tz     = input.string("America/New_York", "Session timezone", group = grpK, display = display.none)
+keyCol = input.color(#ff9f1a, "Key level color", group = grpK, display = display.none)
 
 grpA      = "Absorption"
-bandAtr   = input.float(0.1, "Liquidity band width (× daily ATR)", 0.005, 0.5, 0.005, group = grpA, tooltip = "How far beyond a high/low the resting stops are assumed to sit. Price must trade through the whole band for the level to count as TAKEN. NQ with a ~500 pt daily ATR: 0.1 ≈ 50 pts. Too narrow and every touch counts as fully taken.")
-bandMode  = input.string("Key levels + top heatmap", "Draw bands on", ["Key levels + top heatmap", "Touched levels only", "Off"], group = grpA)
-heatTopN  = input.int(12, "Top heatmap levels to band", 0, 50, group = grpA)
-hideTaken = input.bool(true, "Hide TAKEN levels completely", group = grpA, tooltip = "When a level's liquidity is fully taken, remove its line, band, label and table row.")
-showTakenBand = input.bool(true, "Keep grey 100% band where liquidity was taken", group = grpA) and not hideTaken
-absCol    = input.color(color.new(#b2b5be, 45), "Absorbed part", group = grpA)
-leftKey   = input.color(color.new(#ff9f1a, 70), "Left part (key levels)", group = grpA)
-leftHeat  = input.color(color.new(#2f3cff, 60), "Left part (heatmap)", group = grpA)
-showHeatLbl = input.bool(true, "Label touched heatmap levels", group = grpA)
+bandAtr   = input.float(0.1, "Liquidity band width (× daily ATR)", 0.005, 0.5, 0.005, group = grpA, tooltip = "How far beyond a high/low the resting stops are assumed to sit. Price must trade through the whole band for the level to count as TAKEN. NQ with a ~500 pt daily ATR: 0.1 ≈ 50 pts. Too narrow and every touch counts as fully taken.", display = display.none)
+bandMode  = input.string("Key levels + top heatmap", "Draw bands on", ["Key levels + top heatmap", "Touched levels only", "Off"], group = grpA, display = display.none)
+heatTopN  = input.int(12, "Top heatmap levels to band", 0, 50, group = grpA, display = display.none)
+hideTaken = input.bool(true, "Hide TAKEN levels completely", group = grpA, tooltip = "When a level's liquidity is fully taken, remove its line, band, label and table row.", display = display.none)
+showTakenBand = input.bool(true, "Keep grey 100% band where liquidity was taken", group = grpA, display = display.none) and not hideTaken
+absCol    = input.color(color.new(#b2b5be, 45), "Absorbed part", group = grpA, display = display.none)
+leftKey   = input.color(color.new(#ff9f1a, 70), "Left part (key levels)", group = grpA, display = display.none)
+leftHeat  = input.color(color.new(#2f3cff, 60), "Left part (heatmap)", group = grpA, display = display.none)
+showHeatLbl = input.bool(true, "Label touched heatmap levels", group = grpA, display = display.none)
 
 grpT      = "Absorption table"
-showTable = input.bool(true, "Show absorption table", group = grpT)
-tblPos    = input.string("Top right", "Position", ["Top right", "Bottom right", "Top left", "Bottom left", "Middle right"], group = grpT)
-tblSize   = input.string("Small", "Text size", ["Tiny", "Small", "Normal", "Large"], group = grpT)
-tblHeat   = input.int(3, "Nearest heatmap levels above / below", 0, 8, group = grpT)
-lblSize   = input.string("Normal", "Chart label size", ["Small", "Normal", "Large"], group = grpT)
-showZoneLbl = input.bool(true, "Absorbed / Left / Taken text above each zone", group = grpT)
-zoneLblOff  = input.int(8, "Zone text: bars right of last candle", -300, 300, group = grpT)
-zoneTxtCol  = input.color(color.black, "Zone text color", group = grpT)
-txtGap      = input.float(0.08, "Stack texts closer than (× daily ATR)", 0.0, 1.0, 0.01, group = grpT, tooltip = "Zone texts nearer than this are combined into one stacked label so they never overlap. Raise it if you still see overlaps when zoomed out.")
-takenLblN   = input.int(8, "Label last N taken heatmap zones", 0, 40, group = grpT)
+showTable = input.bool(true, "Show absorption table", group = grpT, display = display.none)
+tblPos    = input.string("Top right", "Position", ["Top right", "Bottom right", "Top left", "Bottom left", "Middle right"], group = grpT, display = display.none)
+tblSize   = input.string("Small", "Text size", ["Tiny", "Small", "Normal", "Large"], group = grpT, display = display.none)
+tblHeat   = input.int(3, "Nearest heatmap levels above / below", 0, 8, group = grpT, display = display.none)
+lblSize   = input.string("Normal", "Chart label size", ["Small", "Normal", "Large"], group = grpT, display = display.none)
+showZoneLbl = input.bool(true, "Absorbed / Left / Taken text above each zone", group = grpT, display = display.none)
+zoneLblOff  = input.int(8, "Zone text: bars right of last candle", -300, 300, group = grpT, display = display.none)
+zoneTxtCol  = input.color(color.black, "Zone text color", group = grpT, display = display.none)
+txtGap      = input.float(0.08, "Stack texts closer than (× daily ATR)", 0.0, 1.0, 0.01, group = grpT, tooltip = "Zone texts nearer than this are combined into one stacked label so they never overlap. Raise it if you still see overlaps when zoomed out.", display = display.none)
+takenLblN   = input.int(8, "Label last N taken heatmap zones", 0, 40, group = grpT, display = display.none)
 
 grpO      = "Orders (footprint · Premium)"
-useOrders = input.bool(true, "Count real executed orders in each zone", group = grpO, tooltip = "Uses TradingView footprint data (request.footprint). Buy orders = trades at the ask, sell orders = trades at the bid, counted only inside each liquidity band after the level formed.")
-fpTicks   = input.int(4, "Footprint ticks per row", 1, 500, group = grpO, tooltip = "Row height = ticks × minimum tick. NQ 4 = 1 pt; a $0.01 stock 4 = $0.04. Smaller = more precise band edges, heavier.")
+useOrders = input.bool(true, "Count real executed orders in each zone", group = grpO, tooltip = "Uses TradingView footprint data (request.footprint). Buy orders = trades at the ask, sell orders = trades at the bid, counted only inside each liquidity band after the level formed.", display = display.none)
+fpTicks   = input.int(4, "Footprint ticks per row", 1, 500, group = grpO, tooltip = "Row height = ticks × minimum tick. NQ 4 = 1 pt; a $0.01 stock 4 = $0.04. Smaller = more precise band edges, heavier.", display = display.none)
 
 grpS2     = "WATCH LONG / WATCH EXIT alerts"
-showSig   = input.bool(true, "Show WATCH LONG / WATCH EXIT labels", group = grpS2, tooltip = "Areas to WATCH, not trade signals (backtests showed no edge as automatic entries).\nWATCH EXIT: buy-side zone hit by heavy BUY orders, price closes back below the level (sellers absorbed the buying).\nWATCH LONG: sell-side zone hit by heavy SELL orders, price closes back above the level (buyers absorbed the selling) — wait for your own confirmation.\nNeeds the Orders (footprint) option on. Fires once per level, on a closed bar.")
-heavyMult = input.float(0.5, "Heavy = zone orders on the bar ≥ × average bar volume", 0.05, 10.0, 0.05, group = grpS2)
-domRatio  = input.float(1.2, "Aggressors must outnumber the other side by ×", 1.0, 5.0, 0.1, group = grpS2)
-sigMinStr = input.float(2.0, "Heatmap levels: minimum strength (×)", 0.0, 10.0, 0.1, group = grpS2)
-sigKeys   = input.bool(true, "Signals on key levels", group = grpS2)
-sigHeat   = input.bool(true, "Signals on heatmap levels", group = grpS2)
+showSig   = input.bool(true, "Show WATCH LONG / WATCH EXIT labels", group = grpS2, tooltip = "Areas to WATCH, not trade signals (backtests showed no edge as automatic entries).\nWATCH EXIT: buy-side zone hit by heavy BUY orders, price closes back below the level (sellers absorbed the buying).\nWATCH LONG: sell-side zone hit by heavy SELL orders, price closes back above the level (buyers absorbed the selling) — wait for your own confirmation.\nNeeds the Orders (footprint) option on. Fires once per level, on a closed bar.", display = display.none)
+heavyMult = input.float(0.5, "Heavy = zone orders on the bar ≥ × average bar volume", 0.05, 10.0, 0.05, group = grpS2, display = display.none)
+domRatio  = input.float(1.2, "Aggressors must outnumber the other side by ×", 1.0, 5.0, 0.1, group = grpS2, display = display.none)
+sigMinStr = input.float(2.0, "Heatmap levels: minimum strength (×)", 0.0, 10.0, 0.1, group = grpS2, display = display.none)
+sigKeys   = input.bool(true, "Signals on key levels", group = grpS2, display = display.none)
+sigHeat   = input.bool(true, "Signals on heatmap levels", group = grpS2, display = display.none)
 
 grpH      = "HTF swing heatmap"
-useH1     = input.bool(true, "1H swings  (weight 1×)", group = grpH)
-useH4     = input.bool(true, "4H swings  (weight 2×)", group = grpH)
-useD1     = input.bool(true, "Daily swings (weight 3×)", group = grpH)
-pivLen    = input.int(3, "Pivot strength (HTF bars each side)", 1, 20, group = grpH)
-halfLifeH = input.float(72.0, "Half-life (hours)", 1.0, 2000.0, group = grpH)
-minInt    = input.float(0.3, "Drop level below intensity", 0.01, 5.0, 0.01, group = grpH)
-mergePct  = input.float(0.05, "Merge distance (× daily ATR)", 0.0, 1.0, 0.01, group = grpH)
-maxLevels = input.int(150, "Max active levels", 10, 150, group = grpH)
+useH1     = input.bool(true, "1H swings  (weight 1×)", group = grpH, display = display.none)
+useH4     = input.bool(true, "4H swings  (weight 2×)", group = grpH, display = display.none)
+useD1     = input.bool(true, "Daily swings (weight 3×)", group = grpH, display = display.none)
+pivLen    = input.int(3, "Pivot strength (HTF bars each side)", 1, 20, group = grpH, display = display.none)
+halfLifeH = input.float(72.0, "Half-life (hours)", 1.0, 2000.0, group = grpH, display = display.none)
+minInt    = input.float(0.3, "Drop level below intensity", 0.01, 5.0, 0.01, group = grpH, display = display.none)
+mergePct  = input.float(0.05, "Merge distance (× daily ATR)", 0.0, 1.0, 0.01, group = grpH, display = display.none)
+maxLevels = input.int(150, "Max active levels", 10, 150, group = grpH, display = display.none)
 
 grpV      = "Visuals"
-colLo     = input.color(color.new(#8a96ff, 85), "Weak level", group = grpV)
-colHi     = input.color(color.new(#2f3cff, 5), "Strong level", group = grpV)
-hotAt     = input.float(4.0, "Full intensity at", 0.5, 30.0, 0.1, group = grpV)
-glow      = input.bool(true, "Glow halo", group = grpV)
-showSwept = input.bool(true, "Keep taken heatmap levels", group = grpV)
-sweptKeep = input.int(40, "Taken heatmap levels kept", 0, 60, group = grpV)
-labelSwp  = input.bool(true, "Label TAKEN / GRAB on strong levels", group = grpV)
-strongMin = input.float(2.0, "Strong level = intensity ≥", 0.1, 30.0, 0.1, group = grpV)
-hideWeak  = input.bool(true, "Hide WEAK heatmap levels", group = grpV, tooltip = "Weak levels (below the threshold) are still tracked in the background — they can grow from retests or new swings merging in — but are not drawn, labelled or listed until they reach the threshold.")
-weakBelow = input.float(2.0, "Hide levels below strength (×) — 2 = Solid", 0.1, 10.0, 0.1, group = grpV)
+colLo     = input.color(color.new(#8a96ff, 85), "Weak level", group = grpV, display = display.none)
+colHi     = input.color(color.new(#2f3cff, 5), "Strong level", group = grpV, display = display.none)
+hotAt     = input.float(4.0, "Full intensity at", 0.5, 30.0, 0.1, group = grpV, display = display.none)
+glow      = input.bool(true, "Glow halo", group = grpV, display = display.none)
+showSwept = input.bool(true, "Keep taken heatmap levels", group = grpV, display = display.none)
+sweptKeep = input.int(40, "Taken heatmap levels kept", 0, 60, group = grpV, display = display.none)
+labelSwp  = input.bool(true, "Label TAKEN / GRAB on strong levels", group = grpV, display = display.none)
+strongMin = input.float(2.0, "Strong level = intensity ≥", 0.1, 30.0, 0.1, group = grpV, display = display.none)
+hideWeak  = input.bool(true, "Hide WEAK heatmap levels", group = grpV, tooltip = "Weak levels (below the threshold) are still tracked in the background — they can grow from retests or new swings merging in — but are not drawn, labelled or listed until they reach the threshold.", display = display.none)
+weakBelow = input.float(2.0, "Hide levels below strength (×) — 2 = Solid", 0.1, 10.0, 0.1, group = grpV, display = display.none)
 
 grpG      = "Age & retests"
-showAge   = input.bool(true, "Show level age (e.g. 3d, 14h)", group = grpG)
-showTests = input.bool(true, "Count retests", group = grpG, tooltip = "A retest = price comes up to (or into) the level and closes back on the original side without taking it. Each new retest means stops are still resting there and more are being added.")
-testProx  = input.float(0.5, "Retest counts within (× band width) of the level", 0.0, 5.0, 0.1, group = grpG)
-testGap   = input.int(3, "Bars between separate retests", 1, 100, group = grpG)
-testBoost = input.float(1.25, "Heatmap strength × per retest", 1.0, 3.0, 0.05, group = grpG, tooltip = "Each retest multiplies a heatmap level's strength by this (time decay still applies). Untested levels just keep fading with the half-life below.")
-maxBoost  = input.int(4, "Max retests that boost strength", 0, 20, group = grpG)
+showAge   = input.bool(true, "Show level age (e.g. 3d, 14h)", group = grpG, display = display.none)
+showTests = input.bool(true, "Count retests", group = grpG, tooltip = "A retest = price comes up to (or into) the level and closes back on the original side without taking it. Each new retest means stops are still resting there and more are being added.", display = display.none)
+testProx  = input.float(0.5, "Retest counts within (× band width) of the level", 0.0, 5.0, 0.1, group = grpG, display = display.none)
+testGap   = input.int(3, "Bars between separate retests", 1, 100, group = grpG, display = display.none)
+testBoost = input.float(1.25, "Heatmap strength × per retest", 1.0, 3.0, 0.05, group = grpG, tooltip = "Each retest multiplies a heatmap level's strength by this (time decay still applies). Untested levels just keep fading with the half-life below.", display = display.none)
+maxBoost  = input.int(4, "Max retests that boost strength", 0, 20, group = grpG, display = display.none)
+
+grpTch    = "Touch labels (GRAB / SWEEP / RUN)"
+showTouch = input.bool(true, "Label GRAB / SWEEP / RUN when liquidity is touched", group = grpTch, tooltip = "Closed candles only, once per type per level.\nGRAB: wick into the stop band and close back (part of the stops taken, rejected).\nSWEEP: wick through the whole band and close back (all stops hunted, reversal watch).\nRUN: close beyond the level (liquidity run, price accepted past it).", display = display.none)
+touchKeys = input.bool(true, "On key levels", group = grpTch, display = display.none)
+touchHeat = input.bool(true, "On visible heatmap levels (Solid / Strong)", group = grpTch, display = display.none)
+colGrab   = input.color(#ff9f1a, "GRAB", group = grpTch, display = display.none)
+colSweep  = input.color(#9c27b0, "SWEEP", group = grpTch, display = display.none)
+colRunUp  = input.color(#089981, "RUN up (through a high)", group = grpTch, display = display.none)
+colRunDn  = input.color(#f23645, "RUN down (through a low)", group = grpTch, display = display.none)
 
 // ─── Shared ─────────────────────────────────────────────────────
 chartSec   = timeframe.in_seconds()
@@ -154,6 +167,35 @@ drawBand(array<box> bxs, int side, float price, float w, float a, int x1, int x2
     if a < 1
         bxs.push(box.new(x1, math.max(edge, far), x2, math.min(edge, far), xloc = xloc.bar_time, bgcolor = leftC, border_color = noCol))
     bxs.size()
+
+// ─── Touch labels: GRAB / SWEEP / RUN ───────────────────────────
+var array<label> touchLabels = array.new<label>()
+var array<bool>  touchNow    = array.from(false, false, false)   // GRAB, SWEEP, RUN on this bar
+touchNow.fill(false)
+
+// 0 none · 1 GRAB · 2 SWEEP · 3 RUN (closed candles only)
+touchType(int side, float p, float w) =>
+    bool wick   = side == 1 ? high > p : low < p
+    bool thru   = side == 1 ? high >= p + w : low <= p - w
+    bool beyond = side == 1 ? close > p : close < p
+    not barstate.isconfirmed or not wick ? 0 : beyond ? 3 : thru ? 2 : 1
+
+// Draws the label once per type per level; returns the updated mask (bits 1 GRAB, 2 SWEEP, 4 RUN)
+touchMark(int side, float p, float w, string name, int mask) =>
+    int t   = showTouch ? touchType(side, p, w) : 0
+    int bit = t == 1 ? 1 : t == 2 ? 2 : t == 3 ? 4 : 0
+    int m   = mask
+    if bit > 0 and int(mask / bit) % 2 == 0
+        m += bit
+        touchNow.set(t - 1, true)
+        string word = t == 1 ? "GRAB" : t == 2 ? "SWEEP" : side == 1 ? "RUN ▲" : "RUN ▼"
+        string why  = t == 1 ? "wick took part of the stops, closed back" : t == 2 ? "all stops hunted, closed back: reversal watch" : side == 1 ? "closed above: buy-side run, price accepted higher" : "closed below: sell-side run, price accepted lower"
+        color  bg   = t == 1 ? colGrab : t == 2 ? colSweep : side == 1 ? colRunUp : colRunDn
+        bool   up   = side == 1   // label above the candle at highs, below at lows
+        touchLabels.push(label.new(bar_index, up ? high : low, word + " · " + name + " " + str.tostring(p, format.mintick), style = up ? label.style_label_down : label.style_label_up, color = bg, textcolor = t == 1 ? color.black : color.white, size = lblSz, text_formatting = text.format_bold, tooltip = word + " " + name + " " + str.tostring(p, format.mintick) + ": " + why))
+        if touchLabels.size() > 60
+            touchLabels.shift().delete()
+    m
 
 // ─── Real executed orders (footprint) ───────────────────────────
 footprint fp = request.footprint(fpTicks)
@@ -256,6 +298,7 @@ type Key
     bool   sigFired = false
     int    tests    = 0
     int    lastTest = na
+    int    touchMask = 0
 
 // Returns [takenNow, grabNow, exitNow, enterNow]
 updKey(Key k, float p, int t, bool on, footprint f) =>
@@ -280,12 +323,15 @@ updKey(Key k, float p, int t, bool on, footprint f) =>
             k.sigFired := false
             k.tests    := 0
             k.lastTest := na
+            k.touchMask := 0
             k.x1      := na(t) ? time : t
             if not na(k.ln)
                 k.ln.delete()
                 k.lb.delete()
             k.ln := line.new(k.x1, p, time, p, xloc = xloc.bar_time, extend = extend.right, color = keyCol, width = 2)
             k.lb := label.new(labelX, p, k.name, xloc = xloc.bar_time, style = label.style_label_left, color = lblBg, textcolor = keyCol, size = lblSz)
+        if not k.taken and touchKeys
+            k.touchMask := touchMark(k.side, p, k.w, k.name, k.touchMask)
         if not k.taken
             bool into = k.side == 1 ? high > p : low < p
             if into
@@ -403,6 +449,7 @@ type Level
     bool  sigFired = false
     int   tests    = 0
     int   lastTest = na
+    int   touchMask = 0
 
 var array<Level> levels      = array.new<Level>()
 var array<line>  sweptLines  = array.new<line>()
@@ -487,6 +534,8 @@ if n > 0
     for i = n - 1 to 0
         Level l = levels.get(i)
         l.intensity *= decay
+        if touchHeat and not isWeak(l)
+            l.touchMask := touchMark(l.side, l.price, l.w, heatStrength(l.intensity) + " " + str.tostring(l.intensity, "#.#") + "×", l.touchMask)
         bool into = l.side == 1 ? high > l.price : low < l.price
         bool done = false
         if into
@@ -505,7 +554,7 @@ if n > 0
                 done := true
                 if strong
                     heatTaken := true
-                    if labelSwp and not hideTaken
+                    if labelSwp and not hideTaken and not (showTouch and touchHeat)
                         pushLabel(label.new(time, l.price, "TAKEN", xloc = xloc.bar_time, style = l.side == 1 ? label.style_label_down : label.style_label_up, color = color.new(#2a2e39, 0), textcolor = color.white, size = size.tiny))
                 if showTakenBand and sweptKeep > 0
                     takenBoxes.push(box.new(l.x1, math.max(l.price, l.price + l.side * l.w), time, math.min(l.price, l.price + l.side * l.w), xloc = xloc.bar_time, bgcolor = color.new(#b2b5be, 75), border_color = noCol))
@@ -529,7 +578,7 @@ if n > 0
                 // GRAB: wicked into the band, closed back
                 if strong
                     heatGrab := true
-                    if labelSwp and not l.grabbed
+                    if labelSwp and not l.grabbed and not (showTouch and touchHeat)
                         pushLabel(label.new(time, l.price, "GRAB", xloc = xloc.bar_time, style = l.side == 1 ? label.style_label_down : label.style_label_up, color = color.new(#ff9f1a, 0), textcolor = color.black, size = size.tiny))
                 l.grabbed := true
                 if sigHeat and not l.sigFired and l.intensity >= sigMinStr and absorbSignal(l.side, l.price, hb, hs)
@@ -753,6 +802,9 @@ alertcondition(keyGrab, "Key level liquidity GRAB", "MTF Liq: key level (PDH/PDL
 alertcondition(keyTaken, "Key level TAKEN", "MTF Liq: key level liquidity fully taken on {{ticker}} at {{close}}")
 alertcondition(heatGrab, "Strong HTF liquidity GRAB", "MTF Liq: strong HTF level swept and rejected on {{ticker}} at {{close}}")
 alertcondition(heatTaken, "Strong HTF liquidity TAKEN", "MTF Liq: strong HTF level fully taken on {{ticker}} at {{close}}")
+alertcondition(touchNow.get(0), "Liquidity GRAB", "MTF Liq GRAB on {{ticker}} at {{close}}: wick into the stop band, closed back")
+alertcondition(touchNow.get(1), "Liquidity SWEEP", "MTF Liq SWEEP on {{ticker}} at {{close}}: all stops hunted, closed back (reversal watch)")
+alertcondition(touchNow.get(2), "Liquidity RUN", "MTF Liq RUN on {{ticker}} at {{close}}: closed beyond the level (continuation)")
 
 // ════════════════════════════════════════════════════════════════
 // ADD-ON · LARGEST POSITIVE GAMMA ABOVE / BELOW (paste at the very bottom
@@ -781,19 +833,19 @@ alertcondition(heatTaken, "Strong HTF liquidity TAKEN", "MTF Liq: strong HTF lev
 //   Rules from how dealer gamma tends to act, not a backtested edge: confirm with your own read.
 // ════════════════════════════════════════════════════════════════
 grpGm    = "Largest positive / negative gamma (from your options app)"
-gmList   = input.text_area("", "Gamma by strike (strike=gamma, comma separated)", group = grpGm, tooltip = "Paste from your GEX app, e.g.  9=400, 9.5=120, 10=850, 10.5=-300, 11=1200. Positive values give the green / red lines, negative values the orange lines. Update it each morning (open interest changes daily).")
-gmMode   = input.string("Always", "Show", ["Always", "Only when no levels on that side"], group = grpGm)
-gmRange  = input.float(15.0, "Look within (% from price)", 0.5, 100.0, 0.5, group = grpGm)
-gmBelow  = input.bool(true, "Also the sell side (below the price)", group = grpGm)
-gmColUp  = input.color(#00e676, "Line above (buy side)", group = grpGm)
-gmColDn  = input.color(#ff1744, "Line below (sell side)", group = grpGm)
-gmNeg    = input.bool(true, "Also the largest NEGATIVE gamma (below and above)", group = grpGm)
-gmColNeg = input.color(#ff9800, "Line negative gamma", group = grpGm)
-gmTxtCol = input.color(color.black, "Text color", group = grpGm)
-gmWidth  = input.int(3, "Line width", 1, 6, group = grpGm)
-gmSig    = input.bool(true, "BUY NOW / SELL NOW signals at the gamma lines", group = grpGm)
-gmTouch  = input.float(0.3, "Touch = within (% of the level)", 0.0, 5.0, 0.05, group = grpGm)
-gmStopP  = input.float(0.5, "Stop beyond the level (%)", 0.05, 10.0, 0.05, group = grpGm)
+gmList   = input.text_area("", "Gamma by strike (strike=gamma, comma separated)", group = grpGm, tooltip = "Paste from your GEX app, e.g.  9=400, 9.5=120, 10=850, 10.5=-300, 11=1200. Positive values give the green / red lines, negative values the orange lines. Update it each morning (open interest changes daily).", display = display.none)
+gmMode   = input.string("Always", "Show", ["Always", "Only when no levels on that side"], group = grpGm, display = display.none)
+gmRange  = input.float(15.0, "Look within (% from price)", 0.5, 100.0, 0.5, group = grpGm, display = display.none)
+gmBelow  = input.bool(true, "Also the sell side (below the price)", group = grpGm, display = display.none)
+gmColUp  = input.color(#00e676, "Line above (buy side)", group = grpGm, display = display.none)
+gmColDn  = input.color(#ff1744, "Line below (sell side)", group = grpGm, display = display.none)
+gmNeg    = input.bool(true, "Also the largest NEGATIVE gamma (below and above)", group = grpGm, display = display.none)
+gmColNeg = input.color(#ff9800, "Line negative gamma", group = grpGm, display = display.none)
+gmTxtCol = input.color(color.black, "Text color", group = grpGm, display = display.none)
+gmWidth  = input.int(3, "Line width", 1, 6, group = grpGm, display = display.none)
+gmSig    = input.bool(true, "BUY NOW / SELL NOW signals at the gamma lines", group = grpGm, display = display.none)
+gmTouch  = input.float(0.3, "Touch = within (% of the level)", 0.0, 5.0, 0.05, group = grpGm, display = display.none)
+gmStopP  = input.float(0.5, "Stop beyond the level (%)", 0.05, 10.0, 0.05, group = grpGm, display = display.none)
 
 // the strike with the largest positive gamma above (dir 1) or below (dir -1) the price, within the range
 gmBest(string list, int dir, float px, float rngPct, int sgn = 1) =>
