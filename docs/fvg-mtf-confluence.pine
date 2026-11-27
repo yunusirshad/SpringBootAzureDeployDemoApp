@@ -1,0 +1,381 @@
+//@version=6
+indicator("MTF FVG Confluence + EQH/EQL", shorttitle = "FVG MTF", overlay = true, max_boxes_count = 60, max_lines_count = 40, max_labels_count = 60, max_bars_back = 2000)
+// Fair value gaps from 4 timeframes, combined into ONE stronger FVG where they overlap.
+//   FVG       3-candle gap. Bullish: low > the high 2 candles back (gap = that high .. this low).
+//             Bearish: high < the low 2 candles back. Smaller than "Min FVG size" x ATR of its timeframe: ignored.
+//   Absorbed  how much of the gap price has already traded into since it formed (0% = untouched, 100% = filled).
+//   Removed   INVALID: price filled it completely, or a candle CLOSED through it.
+//             DECAYED: older than "Max age" candles of its own timeframe, or absorbed more than "Max absorbed".
+//   Combined  where gaps from different timeframes overlap, they merge into one zone: the band is where 2+
+//             overlap, the darker core is where the most overlap. Strength = how many timeframes overlap (x1..x4).
+//             Only the strongest N zones per side are drawn (more timeframes, then higher timeframe, then less
+//             absorbed, then nearest).
+//   EQH/EQL   equal highs / lows: 2+ unswept swing highs (lows) within "Equal within" x ATR of each other, on each
+//             timeframe, merged across timeframes. Strong = at least "Min touches" or found on 2+ timeframes.
+//             A level is dropped once price trades through it (its liquidity is taken).
+
+grpT = "Timeframes"
+tf1 = input.timeframe("15", "Timeframe 1", group = grpT)
+tf2 = input.timeframe("60", "Timeframe 2", group = grpT)
+tf3 = input.timeframe("240", "Timeframe 3", group = grpT)
+tf4 = input.timeframe("D", "Timeframe 4", group = grpT)
+
+grpF = "FVG"
+minAtr   = input.float(0.25, "Min FVG size (x ATR 14 of its timeframe)", minval = 0, step = 0.05, group = grpF)
+keepN    = input.int(12, "FVGs tracked per timeframe and side", minval = 3, maxval = 40, group = grpF)
+maxAge   = input.int(100, "Max age (candles of its own timeframe), then decayed", minval = 5, maxval = 1000, group = grpF)
+maxAbs   = input.float(80, "Max absorbed (%), then decayed", minval = 1, maxval = 100, group = grpF)
+minScore = input.int(2, "Min timeframes overlapping (strength)", minval = 1, maxval = 4, group = grpF)
+showN    = input.int(2, "Show the strongest N per side", minval = 1, maxval = 5, group = grpF)
+
+grpE = "EQH / EQL"
+showEq   = input.bool(true, "Show EQH / EQL", group = grpE)
+pivLen   = input.int(3, "Swing strength (bars each side)", minval = 1, maxval = 10, group = grpE)
+eqTol    = input.float(0.1, "Equal within (x ATR 14 of its timeframe)", minval = 0.01, step = 0.01, group = grpE)
+minTouch = input.int(3, "Min touches (or found on 2+ timeframes)", minval = 2, maxval = 6, group = grpE)
+showEqN  = input.int(2, "Show the strongest N per side", minval = 1, maxval = 5, group = grpE)
+
+grpS = "Style"
+colBull = input.color(color.new(#089981, 0), "Bullish FVG", group = grpS)
+colBear = input.color(color.new(#f23645, 0), "Bearish FVG", group = grpS)
+colEqh  = input.color(color.new(#ff9800, 0), "EQH", group = grpS)
+colEql  = input.color(color.new(#2962ff, 0), "EQL", group = grpS)
+lblBg   = input.color(color.new(#0b0e14, 0), "Label background", group = grpS)
+extendR = input.bool(true, "Extend right", group = grpS)
+
+tfName(string tf) => tf == "D" or tf == "1D" ? "D" : tf == "W" or tf == "1W" ? "W" : tf == "M" or tf == "1M" ? "M" : timeframe.in_seconds(tf) >= 3600 ? str.tostring(timeframe.in_seconds(tf) / 3600) + "H" : str.tostring(timeframe.in_seconds(tf) / 60) + "m"
+
+// ───── Equal highs / lows: group unswept swings within tol of each other ─────
+cluster(array<float> P, array<int> M, float tol, bool isHigh, bool go) =>
+    out = array.new<float>()
+    cnt = array.new<int>()
+    tm  = array.new<int>()
+    int n = P.size()
+    if go and n > 1
+        used = array.new<bool>(n, false)
+        for i = 0 to n - 2
+            if not used.get(i)
+                int c = 1
+                float lv = P.get(i)
+                int t0 = M.get(i)
+                for j = i + 1 to n - 1
+                    if not used.get(j) and math.abs(P.get(j) - P.get(i)) <= tol
+                        c += 1
+                        used.set(j, true)
+                        lv := isHigh ? math.max(lv, P.get(j)) : math.min(lv, P.get(j))
+                        t0 := math.min(t0, M.get(j))
+                if c >= 2
+                    out.push(lv), cnt.push(c), tm.push(t0)
+    [out, cnt, tm]
+
+// ───── Per-timeframe engine (runs on each timeframe through request.security) ─────
+// FVGs: top, bottom, time formed, deepest fill since (low for bullish, high for bearish), age in candles
+tfData(float minA, int keep, int ageMax, float absMax, int pLen, float tolA) =>
+    var array<float> bT = array.new<float>()
+    var array<float> bB = array.new<float>()
+    var array<int>   bM = array.new<int>()
+    var array<float> bX = array.new<float>()
+    var array<int>   bA = array.new<int>()
+    var array<float> sT = array.new<float>()
+    var array<float> sB = array.new<float>()
+    var array<int>   sM = array.new<int>()
+    var array<float> sX = array.new<float>()
+    var array<int>   sA = array.new<int>()
+    var array<float> hP = array.new<float>()
+    var array<int>   hM = array.new<int>()
+    var array<float> lP = array.new<float>()
+    var array<int>   lM = array.new<int>()
+    atr = ta.atr(14)
+    ph = ta.pivothigh(high, pLen, pLen)
+    pl = ta.pivotlow(low, pLen, pLen)
+    float tol = tolA * nz(atr)
+    // update tracked gaps; remove INVALID (filled or closed through) and DECAYED (too old, too absorbed)
+    if bT.size() > 0
+        for i = bT.size() - 1 to 0
+            bX.set(i, math.min(bX.get(i), low))
+            if barstate.isconfirmed
+                bA.set(i, bA.get(i) + 1)
+            float g = bT.get(i) - bB.get(i)
+            float absd = g > 0 ? (bT.get(i) - bX.get(i)) / g * 100 : 100
+            if low <= bB.get(i) or close < bB.get(i) or bA.get(i) > ageMax or absd > absMax
+                bT.remove(i), bB.remove(i), bM.remove(i), bX.remove(i), bA.remove(i)
+    if sT.size() > 0
+        for i = sT.size() - 1 to 0
+            sX.set(i, math.max(sX.get(i), high))
+            if barstate.isconfirmed
+                sA.set(i, sA.get(i) + 1)
+            float g = sT.get(i) - sB.get(i)
+            float absd = g > 0 ? (sX.get(i) - sB.get(i)) / g * 100 : 100
+            if high >= sT.get(i) or close > sT.get(i) or sA.get(i) > ageMax or absd > absMax
+                sT.remove(i), sB.remove(i), sM.remove(i), sX.remove(i), sA.remove(i)
+    // new gaps, on closed candles only
+    if barstate.isconfirmed and not na(atr)
+        if low > high[2] and low - high[2] >= minA * atr
+            bT.push(low), bB.push(high[2]), bM.push(time[1]), bX.push(low), bA.push(0)
+            if bT.size() > keep
+                bT.shift(), bB.shift(), bM.shift(), bX.shift(), bA.shift()
+        if high < low[2] and low[2] - high >= minA * atr
+            sT.push(low[2]), sB.push(high), sM.push(time[1]), sX.push(high), sA.push(0)
+            if sT.size() > keep
+                sT.shift(), sB.shift(), sM.shift(), sX.shift(), sA.shift()
+    // swings: drop a swing once price trades through it (its liquidity is taken)
+    if hP.size() > 0
+        for i = hP.size() - 1 to 0
+            if high > hP.get(i) + tol
+                hP.remove(i), hM.remove(i)
+    if lP.size() > 0
+        for i = lP.size() - 1 to 0
+            if low < lP.get(i) - tol
+                lP.remove(i), lM.remove(i)
+    if not na(ph)
+        hP.push(ph), hM.push(time[pLen])
+        if hP.size() > 40
+            hP.shift(), hM.shift()
+    if not na(pl)
+        lP.push(pl), lM.push(time[pLen])
+        if lP.size() > 40
+            lP.shift(), lM.shift()
+    bool go = bar_index >= last_bar_index - 1      // only needed on the latest candles
+    [eHp, eHn, eHm] = cluster(hP, hM, tol, true, go)
+    [eLp, eLn, eLm] = cluster(lP, lM, tol, false, go)
+    [bT, bB, bM, bX, sT, sB, sM, sX, eHp, eHn, eHm, eLp, eLn, eLm]
+
+[b1T, b1B, b1M, b1X, s1T, s1B, s1M, s1X, h1P, h1N, h1M, l1P, l1N, l1M] = request.security(syminfo.tickerid, tf1, tfData(minAtr, keepN, maxAge, maxAbs, pivLen, eqTol), lookahead = barmerge.lookahead_off)
+[b2T, b2B, b2M, b2X, s2T, s2B, s2M, s2X, h2P, h2N, h2M, l2P, l2N, l2M] = request.security(syminfo.tickerid, tf2, tfData(minAtr, keepN, maxAge, maxAbs, pivLen, eqTol), lookahead = barmerge.lookahead_off)
+[b3T, b3B, b3M, b3X, s3T, s3B, s3M, s3X, h3P, h3N, h3M, l3P, l3N, l3M] = request.security(syminfo.tickerid, tf3, tfData(minAtr, keepN, maxAge, maxAbs, pivLen, eqTol), lookahead = barmerge.lookahead_off)
+[b4T, b4B, b4M, b4X, s4T, s4B, s4M, s4X, h4P, h4N, h4M, l4P, l4N, l4M] = request.security(syminfo.tickerid, tf4, tfData(minAtr, keepN, maxAge, maxAbs, pivLen, eqTol), lookahead = barmerge.lookahead_off)
+
+atrC = ta.atr(14)
+names = array.from(tfName(tf1), tfName(tf2), tfName(tf3), tfName(tf4))
+
+// ───── Gather and combine on the chart ─────
+addAll(array<float> gT, array<float> gB, array<int> gF, array<int> gM, array<float> gX, array<float> T, array<float> B, array<int> M, array<float> X, int idx) =>
+    if not na(T) and T.size() > 0
+        for i = 0 to T.size() - 1
+            gT.push(T.get(i)), gB.push(B.get(i)), gF.push(idx), gM.push(M.get(i)), gX.push(X.get(i))
+
+pushZone(array<float> zLo, array<float> zHi, array<float> zCLo, array<float> zCHi, array<int> zSc, float lo, float hi, float clo, float chi, int sc) =>
+    zLo.push(lo), zHi.push(hi), zCLo.push(clo), zCHi.push(chi), zSc.push(sc)
+
+// Sweep the price edges: a slice's count = how many timeframes have a gap covering it. Neighbouring slices with
+// a count of at least `need` merge into one zone (band); its core is the slices with the highest count.
+buildZones(array<float> gT, array<float> gB, array<int> gF, int need) =>
+    zLo = array.new<float>()
+    zHi = array.new<float>()
+    zCLo = array.new<float>()
+    zCHi = array.new<float>()
+    zSc = array.new<int>()
+    int n = gT.size()
+    edges = array.new<float>()
+    for j = 0 to n - 1
+        if n > 0
+            edges.push(gT.get(j)), edges.push(gB.get(j))
+    edges.sort()
+    float cLo = na
+    float cHi = na
+    float ccLo = na
+    float ccHi = na
+    int cSc = 0
+    if edges.size() >= 2
+        for e = 0 to edges.size() - 2
+            float a = edges.get(e)
+            float b = edges.get(e + 1)
+            if b > a
+                float mid = (a + b) / 2
+                flags = array.new<bool>(4, false)
+                for j = 0 to n - 1
+                    if mid >= gB.get(j) and mid <= gT.get(j)
+                        flags.set(gF.get(j), true)
+                int cnt = 0
+                for k = 0 to 3
+                    if flags.get(k)
+                        cnt += 1
+                if cnt >= need
+                    if not na(cHi) and math.abs(cHi - a) < 1e-10
+                        if cnt > cSc
+                            ccLo := a, ccHi := b, cSc := cnt
+                        else if cnt == cSc and math.abs(ccHi - a) < 1e-10
+                            ccHi := b
+                        cHi := b
+                    else
+                        if not na(cLo)
+                            pushZone(zLo, zHi, zCLo, zCHi, zSc, cLo, cHi, ccLo, ccHi, cSc)
+                        cLo := a, cHi := b, ccLo := a, ccHi := b, cSc := cnt
+                else if not na(cLo)
+                    pushZone(zLo, zHi, zCLo, zCHi, zSc, cLo, cHi, ccLo, ccHi, cSc)
+                    cLo := na, cHi := na, cSc := 0
+        if not na(cLo)
+            pushZone(zLo, zHi, zCLo, zCHi, zSc, cLo, cHi, ccLo, ccHi, cSc)
+    [zLo, zHi, zCLo, zCHi, zSc]
+
+f(float v) => str.tostring(v, format.mintick)
+
+var array<box>   bxs = array.new<box>()
+var array<line>  lns = array.new<line>()
+var array<label> lbs = array.new<label>()
+
+// draw the strongest zones of one side
+drawSide(array<float> gT, array<float> gB, array<int> gF, array<int> gM, array<float> gX, bool bull, color col) =>
+    [zLo, zHi, zCLo, zCHi, zSc] = buildZones(gT, gB, gF, math.min(minScore, 2))
+    int nz_ = zLo.size()
+    zWho = array.new<string>()
+    zAbs = array.new<float>()
+    zOld = array.new<int>()
+    zTop = array.new<int>()
+    for z = 0 to nz_ - 1
+        if nz_ > 0
+            float lo = zLo.get(z)
+            float hi = zHi.get(z)
+            flags = array.new<bool>(4, false)
+            int newest = na
+            float newX = na
+            int oldest = na
+            for j = 0 to gT.size() - 1
+                if gT.get(j) > lo and gB.get(j) < hi
+                    flags.set(gF.get(j), true)
+                    if na(newest) or gM.get(j) > newest
+                        newest := gM.get(j)
+                        newX := gX.get(j)
+                    oldest := na(oldest) ? gM.get(j) : math.min(oldest, gM.get(j))
+            string who = ""
+            int topTf = 0
+            for k = 0 to 3
+                if flags.get(k)
+                    who := who == "" ? names.get(k) : who + " · " + names.get(k)
+                    topTf := k
+            float ab = na(newX) ? 0.0 : bull ? (hi - newX) / (hi - lo) * 100 : (newX - lo) / (hi - lo) * 100
+            zWho.push(who), zAbs.push(math.max(0, math.min(100, ab))), zOld.push(oldest), zTop.push(topTf)
+    chosen = array.new<int>()
+    for r = 0 to showN - 1
+        int best = -1
+        for z = 0 to nz_ - 1
+            if nz_ > 0 and not chosen.includes(z) and zSc.get(z) >= minScore and zAbs.get(z) <= maxAbs
+                float d = math.abs(close - (zLo.get(z) + zHi.get(z)) / 2)
+                bool better = best < 0
+                if not better
+                    float dB = math.abs(close - (zLo.get(best) + zHi.get(best)) / 2)
+                    better := zSc.get(z) > zSc.get(best) or (zSc.get(z) == zSc.get(best) and (zTop.get(z) > zTop.get(best) or (zTop.get(z) == zTop.get(best) and (zAbs.get(z) < zAbs.get(best) or (zAbs.get(z) == zAbs.get(best) and d < dB)))))
+                if better
+                    best := z
+        if best >= 0
+            chosen.push(best)
+    for c in chosen
+        int left = na(zOld.get(c)) ? time : zOld.get(c)
+        bxs.push(box.new(left, zHi.get(c), time, zLo.get(c), xloc = xloc.bar_time, extend = extendR ? extend.right : extend.none,
+             bgcolor = color.new(col, 85), border_color = color.new(col, 100)))
+        bxs.push(box.new(left, zCHi.get(c), time, zCLo.get(c), xloc = xloc.bar_time, extend = extendR ? extend.right : extend.none,
+             bgcolor = color.new(col, math.max(40, 85 - 12 * zSc.get(c))), border_color = col, border_style = line.style_dashed))
+        string txt = (bull ? "BULL FVG ×" : "BEAR FVG ×") + str.tostring(zSc.get(c)) + "  " + zWho.get(c) + "\n" + f(zLo.get(c)) + " – " + f(zHi.get(c)) + "  ·  absorbed " + str.tostring(zAbs.get(c), "#") + "%"
+        lbs.push(label.new(time, (zLo.get(c) + zHi.get(c)) / 2, txt, xloc = xloc.bar_time, style = label.style_label_left,
+             color = lblBg, textcolor = col, size = size.normal, text_formatting = text.format_bold))
+    chosen.size() > 0 ? zAbs.get(chosen.get(0)) : na
+
+// merge equal highs / lows across timeframes and draw the strongest
+drawEq(array<float> P, array<int> N, array<int> F, array<int> M, bool isHigh, color col) =>
+    float tolC = eqTol * 1.5 * nz(atrC)
+    int n = P.size()
+    lv = array.new<float>()
+    tc = array.new<int>()
+    tfc = array.new<int>()
+    tm = array.new<int>()
+    wh = array.new<string>()
+    if n > 0
+        used = array.new<bool>(n, false)
+        for i = 0 to n - 1
+            if not used.get(i)
+                used.set(i, true)
+                float l = P.get(i)
+                int touches = N.get(i)
+                int t0 = M.get(i)
+                flags = array.new<bool>(4, false)
+                flags.set(F.get(i), true)
+                for j = 0 to n - 1
+                    if not used.get(j) and math.abs(P.get(j) - P.get(i)) <= tolC
+                        used.set(j, true)
+                        l := isHigh ? math.max(l, P.get(j)) : math.min(l, P.get(j))
+                        touches := math.max(touches, N.get(j))
+                        t0 := math.min(t0, M.get(j))
+                        flags.set(F.get(j), true)
+                int k = 0
+                string who = ""
+                for q = 0 to 3
+                    if flags.get(q)
+                        k += 1
+                        who := who == "" ? names.get(q) : who + " · " + names.get(q)
+                bool side = isHigh ? l > close : l < close
+                if side and (touches >= minTouch or k >= 2)
+                    lv.push(l), tc.push(touches), tfc.push(k), tm.push(t0), wh.push(who)
+    chosen = array.new<int>()
+    for r = 0 to showEqN - 1
+        int best = -1
+        for z = 0 to lv.size() - 1
+            if lv.size() > 0 and not chosen.includes(z)
+                int s = tc.get(z) + 2 * (tfc.get(z) - 1)
+                bool better = best < 0
+                if not better
+                    int sB = tc.get(best) + 2 * (tfc.get(best) - 1)
+                    better := s > sB or (s == sB and math.abs(close - lv.get(z)) < math.abs(close - lv.get(best)))
+                if better
+                    best := z
+        if best >= 0
+            chosen.push(best)
+    for c in chosen
+        lns.push(line.new(tm.get(c), lv.get(c), time, lv.get(c), xloc = xloc.bar_time, extend = extendR ? extend.right : extend.none,
+             color = col, width = 2, style = line.style_dashed))
+        lbs.push(label.new(time, lv.get(c), (isHigh ? "EQH ×" : "EQL ×") + str.tostring(tc.get(c)) + "  " + wh.get(c) + "  " + f(lv.get(c)),
+             xloc = xloc.bar_time, style = label.style_label_left, color = lblBg, textcolor = col, size = size.normal, text_formatting = text.format_bold))
+    lv.size()
+
+float topBullAbs = na
+float topBearAbs = na
+int eqhCount = na
+int eqlCount = na
+if barstate.islast
+    for x in bxs
+        box.delete(x)
+    for x in lns
+        line.delete(x)
+    for x in lbs
+        label.delete(x)
+    bxs.clear(), lns.clear(), lbs.clear()
+
+    gbT = array.new<float>(), gbB = array.new<float>(), gbF = array.new<int>(), gbM = array.new<int>(), gbX = array.new<float>()
+    addAll(gbT, gbB, gbF, gbM, gbX, b1T, b1B, b1M, b1X, 0)
+    addAll(gbT, gbB, gbF, gbM, gbX, b2T, b2B, b2M, b2X, 1)
+    addAll(gbT, gbB, gbF, gbM, gbX, b3T, b3B, b3M, b3X, 2)
+    addAll(gbT, gbB, gbF, gbM, gbX, b4T, b4B, b4M, b4X, 3)
+    gsT = array.new<float>(), gsB = array.new<float>(), gsF = array.new<int>(), gsM = array.new<int>(), gsX = array.new<float>()
+    addAll(gsT, gsB, gsF, gsM, gsX, s1T, s1B, s1M, s1X, 0)
+    addAll(gsT, gsB, gsF, gsM, gsX, s2T, s2B, s2M, s2X, 1)
+    addAll(gsT, gsB, gsF, gsM, gsX, s3T, s3B, s3M, s3X, 2)
+    addAll(gsT, gsB, gsF, gsM, gsX, s4T, s4B, s4M, s4X, 3)
+    topBullAbs := drawSide(gbT, gbB, gbF, gbM, gbX, true, colBull)
+    topBearAbs := drawSide(gsT, gsB, gsF, gsM, gsX, false, colBear)
+
+    if showEq
+        hP = array.new<float>(), hN = array.new<int>(), hF = array.new<int>(), hM = array.new<int>()
+        lP = array.new<float>(), lN = array.new<int>(), lF = array.new<int>(), lM = array.new<int>()
+        for k = 0 to 3
+            aP = k == 0 ? h1P : k == 1 ? h2P : k == 2 ? h3P : h4P
+            aN = k == 0 ? h1N : k == 1 ? h2N : k == 2 ? h3N : h4N
+            aM = k == 0 ? h1M : k == 1 ? h2M : k == 2 ? h3M : h4M
+            if not na(aP) and aP.size() > 0
+                for i = 0 to aP.size() - 1
+                    hP.push(aP.get(i)), hN.push(aN.get(i)), hF.push(k), hM.push(aM.get(i))
+            cP = k == 0 ? l1P : k == 1 ? l2P : k == 2 ? l3P : l4P
+            cN = k == 0 ? l1N : k == 1 ? l2N : k == 2 ? l3N : l4N
+            cM = k == 0 ? l1M : k == 1 ? l2M : k == 2 ? l3M : l4M
+            if not na(cP) and cP.size() > 0
+                for i = 0 to cP.size() - 1
+                    lP.push(cP.get(i)), lN.push(cN.get(i)), lF.push(k), lM.push(cM.get(i))
+        eqhCount := drawEq(hP, hN, hF, hM, true, colEqh)
+        eqlCount := drawEq(lP, lN, lF, lM, false, colEql)
+
+// data window (last bar)
+plot(topBullAbs, "Strongest bull FVG absorbed %", display = display.data_window)
+plot(topBearAbs, "Strongest bear FVG absorbed %", display = display.data_window)
+plot(eqhCount, "Strong EQH levels", display = display.data_window)
+plot(eqlCount, "Strong EQL levels", display = display.data_window)
+sz(array<float> a) => na(a) ? 0 : a.size()
+plot(sz(b1T) + sz(b2T) + sz(b3T) + sz(b4T), "Live bullish FVGs (all timeframes)", display = display.data_window)
+plot(sz(s1T) + sz(s2T) + sz(s3T) + sz(s4T), "Live bearish FVGs (all timeframes)", display = display.data_window)
