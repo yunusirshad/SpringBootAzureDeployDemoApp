@@ -1,0 +1,101 @@
+//@version=6
+indicator("Fib + Golden Zone (chart timeframe)", shorttitle = "Fib GZ", overlay = true, max_lines_count = 20, max_labels_count = 20, max_boxes_count = 5)
+// Fib levels from the swing on the CHART'S timeframe (or a timeframe you pick).
+// Swing = highest high and lowest low of the last N bars of that timeframe.
+// Uptrend   (low came first, then high): 0 at the swing HIGH, 1 at the swing LOW.
+// Downtrend (high came first, then low): 0 at the swing LOW, 1 at the swing HIGH.
+// Either way 0 is the latest extreme, so 0.5–0.7 is the retracement ("golden zone").
+// Switch the chart from 5m to 1h to 1D and the swing follows it.
+
+// ───── Inputs ─────
+swingTf    = input.timeframe("", "Swing timeframe (empty = the chart's)")
+lookback   = input.int(50, "Swing lookback (bars of that timeframe)", minval = 5)
+closedOnly = input.bool(true, "Use closed bars only (no repaint)")
+lvA        = input.float(0.0, "Level 1", step = 0.001, group = "Levels")
+lvB        = input.float(0.5, "Level 2 (golden zone start)", step = 0.001, group = "Levels")
+lvC        = input.float(0.7, "Level 3 (golden zone end)", step = 0.001, group = "Levels")
+lvD        = input.float(1.0, "Level 4", step = 0.001, group = "Levels")
+colLine    = input.color(color.new(color.gray, 0), "Level lines", group = "Style")
+colGZ      = input.color(color.new(#f2c14e, 80), "Golden zone fill", group = "Style")
+colGZLine  = input.color(color.new(#f2c14e, 0), "Golden zone lines", group = "Style")
+colSwing   = input.color(color.new(#2962ff, 30), "Swing connector", group = "Style")
+lineW      = input.int(1, "Line width", minval = 1, maxval = 4, group = "Style")
+extendR    = input.bool(true, "Extend lines right", group = "Style")
+showLbl    = input.bool(true, "Show level labels", group = "Style")
+
+tf = swingTf == "" ? timeframe.period : swingTf
+tfName = tf == "D" or tf == "1D" ? "D" : tf == "W" or tf == "1W" ? "W" : tf == "M" or tf == "1M" ? "M" : timeframe.in_seconds(tf) >= 3600 ? str.tostring(timeframe.in_seconds(tf) / 3600) + "h" : str.tostring(timeframe.in_seconds(tf) / 60) + "m"
+
+// ───── Swing on the chosen timeframe ─────
+swing(int off) =>
+    hb  = ta.highestbars(high, lookback)
+    lb  = ta.lowestbars(low, lookback)
+    hi  = ta.highest(high, lookback)
+    lo  = ta.lowest(low, lookback)
+    hiT = time[-hb]
+    loT = time[-lb]
+    [hi[off], lo[off], hiT[off], loT[off]]
+
+[hi0, lo0, hiT0, loT0] = request.security(syminfo.tickerid, tf, swing(0), lookahead = barmerge.lookahead_off)
+[hi1, lo1, hiT1, loT1] = request.security(syminfo.tickerid, tf, swing(1), lookahead = barmerge.lookahead_on)
+
+hi  = closedOnly ? hi1  : hi0
+lo  = closedOnly ? lo1  : lo0
+hiT = closedOnly ? hiT1 : hiT0
+loT = closedOnly ? loT1 : loT0
+
+upTrend = hiT > loT          // the high is the more recent extreme
+rng     = hi - lo
+lvlPrice(float l) => upTrend ? hi - l * rng : lo + l * rng
+startT  = math.min(hiT, loT) // anchor at the first swing point
+
+// ───── Drawing (rebuilt on the last bar) ─────
+var array<line>  lns = array.new<line>()
+var array<label> lbs = array.new<label>()
+var box gz = na
+var line conn = na
+
+clearAll() =>
+    for l in lns
+        line.delete(l)
+    for b in lbs
+        label.delete(b)
+    array.clear(lns)
+    array.clear(lbs)
+
+drawLevel(float l, color c, int w) =>
+    p = lvlPrice(l)
+    ln = line.new(startT, p, time, p, xloc = xloc.bar_time, extend = extendR ? extend.right : extend.none, color = c, width = w)
+    array.push(lns, ln)
+    if showLbl
+        lb = label.new(time, p, str.tostring(l) + "  (" + str.tostring(p, format.mintick) + ")", xloc = xloc.bar_time,
+             style = label.style_label_left, color = color.new(color.black, 100), textcolor = c, size = size.small)
+        array.push(lbs, lb)
+
+if barstate.islast and not na(hi) and not na(lo) and rng > 0
+    clearAll()
+    box.delete(gz)
+    line.delete(conn)
+    drawLevel(lvA, colLine, lineW)
+    drawLevel(lvB, colGZLine, lineW)
+    drawLevel(lvC, colGZLine, lineW)
+    drawLevel(lvD, colLine, lineW)
+    gzTop = math.max(lvlPrice(lvB), lvlPrice(lvC))
+    gzBot = math.min(lvlPrice(lvB), lvlPrice(lvC))
+    gz := box.new(startT, gzTop, time, gzBot, xloc = xloc.bar_time, extend = extendR ? extend.right : extend.none,
+         bgcolor = colGZ, border_color = color.new(colGZ, 100))
+    // dashed connector from the first swing point to the latest one (shows direction)
+    if upTrend
+        conn := line.new(loT, lo, hiT, hi, xloc = xloc.bar_time, color = colSwing, style = line.style_dashed, width = 1)
+    else
+        conn := line.new(hiT, hi, loT, lo, xloc = xloc.bar_time, color = colSwing, style = line.style_dashed, width = 1)
+    array.push(lbs, label.new(time, lvlPrice(lvD), tfName + " Fib (" + str.tostring(lookback) + " bars): " + (upTrend ? "UPTREND (0 at high)" : "DOWNTREND (0 at low)"),
+         xloc = xloc.bar_time, style = label.style_label_lower_left, color = color.new(color.black, 100),
+         textcolor = upTrend ? #089981 : #f23645, size = size.small))
+
+// Data window / alerts
+plot(lvlPrice(lvB), "Golden zone 0.5", display = display.data_window)
+plot(lvlPrice(lvC), "Golden zone 0.7", display = display.data_window)
+plot(upTrend ? 1 : -1, "Trend (1 up, -1 down)", display = display.data_window)
+inGZ = close <= math.max(lvlPrice(lvB), lvlPrice(lvC)) and close >= math.min(lvlPrice(lvB), lvlPrice(lvC))
+alertcondition(inGZ and not inGZ[1], "Price entered golden zone", "{{ticker}} entered the fib golden zone")
