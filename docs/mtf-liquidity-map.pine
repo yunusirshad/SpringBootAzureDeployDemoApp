@@ -10,9 +10,10 @@ indicator("MTF Liquidity Map + Absorption + Orders", "MTF Liq Abs", overlay = tr
 //           premarket H-L (04:00-09:30 ET; needs extended hours on).
 // Only SOLID (2×+) and STRONG (3×+) liquidity is drawn.
 // Touch labels (closed candles, once per type per level):
-//   GRAB  · wick into the stop band, closes back  → part of the stops taken, rejected
-//   SWEEP · wick through the WHOLE band, closes back → all stops hunted, reversal watch
-//   RUN   · closes beyond the level → liquidity run, price accepted past it (continuation)
+//   GRAB  · wick past the level, the SAME candle closes back → stops grabbed, rejected
+//   SWEEP · a candle CLOSES past the level, then price COMES BACK (closes back on the
+//           original side) within N candles → stops swept, failed break, reversal watch
+//   RUN   · closes past the level and HOLDS there for N candles → liquidity run (continuation)
 // Layer 2 · HTF swing heatmap (blue): 1H / 4H / Daily swing highs/lows,
 //           weighted by volume × timeframe weight, decayed by real time.
 //
@@ -107,7 +108,8 @@ testBoost = input.float(1.25, "Heatmap strength × per retest", 1.0, 3.0, 0.05, 
 maxBoost  = input.int(4, "Max retests that boost strength", 0, 20, group = grpG, display = display.none)
 
 grpTch    = "Touch labels (GRAB / SWEEP / RUN)"
-showTouch = input.bool(true, "Label GRAB / SWEEP / RUN when liquidity is touched", group = grpTch, tooltip = "Closed candles only, once per type per level.\nGRAB: wick into the stop band and close back (part of the stops taken, rejected).\nSWEEP: wick through the whole band and close back (all stops hunted, reversal watch).\nRUN: close beyond the level (liquidity run, price accepted past it).", display = display.none)
+showTouch = input.bool(true, "Label GRAB / SWEEP / RUN when liquidity is touched", group = grpTch, tooltip = "Closed candles only, once per type per level.\nGRAB: wick past the level, the same candle closes back (stops grabbed, rejected).\nSWEEP: a candle closes past the level, then price comes back within N candles (stops swept, failed break: reversal watch).\nRUN: closes past the level and holds there for N candles (liquidity run: continuation).", display = display.none)
+runBars   = input.int(3, "SWEEP or RUN: candles to decide (N)", 1, 20, group = grpTch, tooltip = "After a candle closes past a level: back within N candles = SWEEP, still past it after N candles = RUN.", display = display.none)
 touchKeys = input.bool(true, "On key levels", group = grpTch, display = display.none)
 touchHeat = input.bool(true, "On visible heatmap levels (Solid / Strong)", group = grpTch, display = display.none)
 colGrab   = input.color(#ff9f1a, "GRAB", group = grpTch, display = display.none)
@@ -173,28 +175,38 @@ var array<label> touchLabels = array.new<label>()
 var array<bool>  touchNow    = array.from(false, false, false)   // GRAB, SWEEP, RUN on this bar
 touchNow.fill(false)
 
-// 0 none · 1 GRAB · 2 SWEEP · 3 RUN (closed candles only)
-touchType(int side, float p, float w) =>
-    bool wick   = side == 1 ? high > p : low < p
-    bool thru   = side == 1 ? high >= p + w : low <= p - w
-    bool beyond = side == 1 ? close > p : close < p
-    not barstate.isconfirmed or not wick ? 0 : beyond ? 3 : thru ? 2 : 1
+// A level price closed past, waiting to see if it comes back (SWEEP) or holds (RUN)
+type Pend
+    float  p
+    int    side
+    string name
+    int    bar
+var array<Pend> pends = array.new<Pend>()
 
-// Draws the label once per type per level; returns the updated mask (bits 1 GRAB, 2 SWEEP, 4 RUN)
-touchMark(int side, float p, float w, string name, int mask) =>
-    int t   = showTouch ? touchType(side, p, w) : 0
-    int bit = t == 1 ? 1 : t == 2 ? 2 : t == 3 ? 4 : 0
-    int m   = mask
-    if bit > 0 and int(mask / bit) % 2 == 0
-        m += bit
-        touchNow.set(t - 1, true)
-        string word = t == 1 ? "GRAB" : t == 2 ? "SWEEP" : side == 1 ? "RUN ▲" : "RUN ▼"
-        string why  = t == 1 ? "wick took part of the stops, closed back" : t == 2 ? "all stops hunted, closed back: reversal watch" : side == 1 ? "closed above: buy-side run, price accepted higher" : "closed below: sell-side run, price accepted lower"
-        color  bg   = t == 1 ? colGrab : t == 2 ? colSweep : side == 1 ? colRunUp : colRunDn
-        bool   up   = side == 1   // label above the candle at highs, below at lows
-        touchLabels.push(label.new(bar_index, up ? high : low, word + " · " + name + " " + str.tostring(p, format.mintick), style = up ? label.style_label_down : label.style_label_up, color = bg, textcolor = t == 1 ? color.black : color.white, size = lblSz, text_formatting = text.format_bold, tooltip = word + " " + name + " " + str.tostring(p, format.mintick) + ": " + why))
-        if touchLabels.size() > 60
-            touchLabels.shift().delete()
+// t: 1 GRAB · 2 SWEEP · 3 RUN
+drawTouch(int t, int side, string name, float p) =>
+    touchNow.set(t - 1, true)
+    string word = t == 1 ? "GRAB" : t == 2 ? "SWEEP" : side == 1 ? "RUN ▲" : "RUN ▼"
+    string why  = t == 1 ? "wick past the level, closed back: stops grabbed" : t == 2 ? (side == 1 ? "broke above and came back below: stops swept, reversal watch" : "broke below and came back above: stops swept, reversal watch") : side == 1 ? "closed above and held " + str.tostring(runBars) + " candles: run higher" : "closed below and held " + str.tostring(runBars) + " candles: run lower"
+    color  bg   = t == 1 ? colGrab : t == 2 ? colSweep : side == 1 ? colRunUp : colRunDn
+    bool   up   = side == 1   // label above the candle at highs, below at lows
+    touchLabels.push(label.new(bar_index, up ? high : low, word + " · " + name + " " + str.tostring(p, format.mintick), style = up ? label.style_label_down : label.style_label_up, color = bg, textcolor = t == 1 ? color.black : color.white, size = lblSz, text_formatting = text.format_bold, tooltip = word + " " + name + " " + str.tostring(p, format.mintick) + ": " + why))
+    if touchLabels.size() > 60
+        touchLabels.shift().delete()
+    touchLabels.size()
+
+// Called per level on every bar; returns the updated mask (bit 1 = GRAB shown, bit 4 = break being tracked)
+touchMark(int side, float p, string name, int mask) =>
+    int m = mask
+    if showTouch and barstate.isconfirmed
+        bool wick   = side == 1 ? high > p : low < p
+        bool beyond = side == 1 ? close > p : close < p
+        if beyond and int(m / 4) % 2 == 0
+            m += 4
+            pends.push(Pend.new(p, side, name, bar_index))
+        else if wick and not beyond and m % 2 == 0
+            m += 1
+            drawTouch(1, side, name, p)
     m
 
 // ─── Real executed orders (footprint) ───────────────────────────
@@ -331,7 +343,7 @@ updKey(Key k, float p, int t, bool on, footprint f) =>
             k.ln := line.new(k.x1, p, time, p, xloc = xloc.bar_time, extend = extend.right, color = keyCol, width = 2)
             k.lb := label.new(labelX, p, k.name, xloc = xloc.bar_time, style = label.style_label_left, color = lblBg, textcolor = keyCol, size = lblSz)
         if not k.taken and touchKeys
-            k.touchMask := touchMark(k.side, p, k.w, k.name, k.touchMask)
+            k.touchMask := touchMark(k.side, p, k.name, k.touchMask)
         if not k.taken
             bool into = k.side == 1 ? high > p : low < p
             if into
@@ -535,7 +547,7 @@ if n > 0
         Level l = levels.get(i)
         l.intensity *= decay
         if touchHeat and not isWeak(l)
-            l.touchMask := touchMark(l.side, l.price, l.w, heatStrength(l.intensity) + " " + str.tostring(l.intensity, "#.#") + "×", l.touchMask)
+            l.touchMask := touchMark(l.side, l.price, heatStrength(l.intensity) + " " + str.tostring(l.intensity, "#.#") + "×", l.touchMask)
         bool into = l.side == 1 ? high > l.price : low < l.price
         bool done = false
         if into
@@ -612,6 +624,19 @@ if useD1 and chartSec <= 86400
         addLevel(d1H, d1R * 3.0, 1, d1T)
     if not na(d1L)
         addLevel(d1L, d1R * 3.0, -1, d1T)
+
+// ─── SWEEP or RUN: decide the breaks being tracked ──────────────
+if barstate.isconfirmed and pends.size() > 0
+    for i = pends.size() - 1 to 0
+        Pend q = pends.get(i)
+        if bar_index > q.bar
+            bool back = q.side == 1 ? close < q.p : close > q.p
+            if back
+                drawTouch(2, q.side, q.name, q.p)
+                pends.remove(i)
+            else if bar_index - q.bar >= runBars
+                drawTouch(3, q.side, q.name, q.p)
+                pends.remove(i)
 
 // ─── Last bar: colours, bands, absorption labels ────────────────
 if barstate.islast
@@ -803,8 +828,8 @@ alertcondition(keyTaken, "Key level TAKEN", "MTF Liq: key level liquidity fully 
 alertcondition(heatGrab, "Strong HTF liquidity GRAB", "MTF Liq: strong HTF level swept and rejected on {{ticker}} at {{close}}")
 alertcondition(heatTaken, "Strong HTF liquidity TAKEN", "MTF Liq: strong HTF level fully taken on {{ticker}} at {{close}}")
 alertcondition(touchNow.get(0), "Liquidity GRAB", "MTF Liq GRAB on {{ticker}} at {{close}}: wick into the stop band, closed back")
-alertcondition(touchNow.get(1), "Liquidity SWEEP", "MTF Liq SWEEP on {{ticker}} at {{close}}: all stops hunted, closed back (reversal watch)")
-alertcondition(touchNow.get(2), "Liquidity RUN", "MTF Liq RUN on {{ticker}} at {{close}}: closed beyond the level (continuation)")
+alertcondition(touchNow.get(1), "Liquidity SWEEP", "MTF Liq SWEEP on {{ticker}} at {{close}}: broke a level and came back (stops swept, reversal watch)")
+alertcondition(touchNow.get(2), "Liquidity RUN", "MTF Liq RUN on {{ticker}} at {{close}}: closed past a level and held (continuation)")
 
 // ════════════════════════════════════════════════════════════════
 // ADD-ON · LARGEST POSITIVE GAMMA ABOVE / BELOW (paste at the very bottom
