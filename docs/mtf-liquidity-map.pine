@@ -1,0 +1,923 @@
+//@version=6
+indicator("MTF Liquidity Map + Absorption + Orders", "MTF Liq Abs", overlay = true, max_lines_count = 500, max_labels_count = 200, max_boxes_count = 400)
+
+// ════════════════════════════════════════════════════════════════
+// MTF Liquidity Map + Absorption — every level is sourced from a FIXED
+// timeframe, so the same map shows on 1m, 3m, 15m, 1h...
+//
+// Layer 1 · Key levels (orange): prev day / week / month H-L,
+//           New York session H-L (9:30-16:00 ET) and New York
+//           premarket H-L (04:00-09:30 ET; needs extended hours on).
+// Only SOLID (2×+) and STRONG (3×+) liquidity is drawn.
+// Layer 2 · HTF swing heatmap (blue): 1H / 4H / Daily swing highs/lows,
+//           weighted by volume × timeframe weight, decayed by real time.
+//
+// Absorption: stops rest just BEYOND a high/low, so each level gets a
+// liquidity band on its stop side (width = × daily ATR).
+//   • Price wicking into the band eats it: grey = ABSORBED, colour = LEFT
+//   • Wick in + close back on the original side = GRAB (sweep & reject)
+//   • Price trading through the whole band = TAKEN (dashed grey stub)
+//   • Heatmap brightness = liquidity LEFT (intensity × unabsorbed share)
+// Age & retests: every level shows its age (h/d). Heatmap levels fade
+//   with time (half-life); each retest (price tags the level and closes
+//   back) multiplies its strength — stops are still there and growing.
+// Depth is measured with highs/lows, so % is the same on any chart TF.
+// Proxy only: Pine has no Level 2 / real resting-order data.
+// ════════════════════════════════════════════════════════════════
+
+// ─── Inputs ─────────────────────────────────────────────────────
+grpK   = "Key levels"
+showD  = input.bool(true, "Previous day high/low", group = grpK)
+showW  = input.bool(true, "Previous week high/low", group = grpK)
+showM  = input.bool(true, "Previous month high/low", group = grpK)
+showNY  = input.bool(true, "New York session high/low (previous session)", group = grpK, tooltip = "Skipped when it is the same price as PDH/PDL (normal on stocks).")
+showPre = input.bool(true, "New York premarket high/low", group = grpK, tooltip = "Needs extended trading hours turned on for the chart.")
+sessNY  = input.session("0930-1600", "New York session", group = grpK)
+sessPre = input.session("0400-0930", "New York premarket", group = grpK)
+tz     = input.string("America/New_York", "Session timezone", group = grpK)
+keyCol = input.color(#ff9f1a, "Key level color", group = grpK)
+
+grpA      = "Absorption"
+bandAtr   = input.float(0.1, "Liquidity band width (× daily ATR)", 0.005, 0.5, 0.005, group = grpA, tooltip = "How far beyond a high/low the resting stops are assumed to sit. Price must trade through the whole band for the level to count as TAKEN. NQ with a ~500 pt daily ATR: 0.1 ≈ 50 pts. Too narrow and every touch counts as fully taken.")
+bandMode  = input.string("Key levels + top heatmap", "Draw bands on", ["Key levels + top heatmap", "Touched levels only", "Off"], group = grpA)
+heatTopN  = input.int(12, "Top heatmap levels to band", 0, 50, group = grpA)
+hideTaken = input.bool(true, "Hide TAKEN levels completely", group = grpA, tooltip = "When a level's liquidity is fully taken, remove its line, band, label and table row.")
+showTakenBand = input.bool(true, "Keep grey 100% band where liquidity was taken", group = grpA) and not hideTaken
+absCol    = input.color(color.new(#b2b5be, 45), "Absorbed part", group = grpA)
+leftKey   = input.color(color.new(#ff9f1a, 70), "Left part (key levels)", group = grpA)
+leftHeat  = input.color(color.new(#2f3cff, 60), "Left part (heatmap)", group = grpA)
+showHeatLbl = input.bool(true, "Label touched heatmap levels", group = grpA)
+
+grpT      = "Absorption table"
+showTable = input.bool(true, "Show absorption table", group = grpT)
+tblPos    = input.string("Top right", "Position", ["Top right", "Bottom right", "Top left", "Bottom left", "Middle right"], group = grpT)
+tblSize   = input.string("Small", "Text size", ["Tiny", "Small", "Normal", "Large"], group = grpT)
+tblHeat   = input.int(3, "Nearest heatmap levels above / below", 0, 8, group = grpT)
+lblSize   = input.string("Normal", "Chart label size", ["Small", "Normal", "Large"], group = grpT)
+showZoneLbl = input.bool(true, "Absorbed / Left / Taken text above each zone", group = grpT)
+zoneLblOff  = input.int(8, "Zone text: bars right of last candle", -300, 300, group = grpT)
+zoneTxtCol  = input.color(color.black, "Zone text color", group = grpT)
+txtGap      = input.float(0.08, "Stack texts closer than (× daily ATR)", 0.0, 1.0, 0.01, group = grpT, tooltip = "Zone texts nearer than this are combined into one stacked label so they never overlap. Raise it if you still see overlaps when zoomed out.")
+takenLblN   = input.int(8, "Label last N taken heatmap zones", 0, 40, group = grpT)
+
+grpO      = "Orders (footprint · Premium)"
+useOrders = input.bool(true, "Count real executed orders in each zone", group = grpO, tooltip = "Uses TradingView footprint data (request.footprint). Buy orders = trades at the ask, sell orders = trades at the bid, counted only inside each liquidity band after the level formed.")
+fpTicks   = input.int(4, "Footprint ticks per row", 1, 500, group = grpO, tooltip = "Row height = ticks × minimum tick. NQ 4 = 1 pt; a $0.01 stock 4 = $0.04. Smaller = more precise band edges, heavier.")
+
+grpS2     = "WATCH LONG / WATCH EXIT alerts"
+showSig   = input.bool(true, "Show WATCH LONG / WATCH EXIT labels", group = grpS2, tooltip = "Areas to WATCH, not trade signals (backtests showed no edge as automatic entries).\nWATCH EXIT: buy-side zone hit by heavy BUY orders, price closes back below the level (sellers absorbed the buying).\nWATCH LONG: sell-side zone hit by heavy SELL orders, price closes back above the level (buyers absorbed the selling) — wait for your own confirmation.\nNeeds the Orders (footprint) option on. Fires once per level, on a closed bar.")
+heavyMult = input.float(0.5, "Heavy = zone orders on the bar ≥ × average bar volume", 0.05, 10.0, 0.05, group = grpS2)
+domRatio  = input.float(1.2, "Aggressors must outnumber the other side by ×", 1.0, 5.0, 0.1, group = grpS2)
+sigMinStr = input.float(2.0, "Heatmap levels: minimum strength (×)", 0.0, 10.0, 0.1, group = grpS2)
+sigKeys   = input.bool(true, "Signals on key levels", group = grpS2)
+sigHeat   = input.bool(true, "Signals on heatmap levels", group = grpS2)
+
+grpH      = "HTF swing heatmap"
+useH1     = input.bool(true, "1H swings  (weight 1×)", group = grpH)
+useH4     = input.bool(true, "4H swings  (weight 2×)", group = grpH)
+useD1     = input.bool(true, "Daily swings (weight 3×)", group = grpH)
+pivLen    = input.int(3, "Pivot strength (HTF bars each side)", 1, 20, group = grpH)
+halfLifeH = input.float(72.0, "Half-life (hours)", 1.0, 2000.0, group = grpH)
+minInt    = input.float(0.3, "Drop level below intensity", 0.01, 5.0, 0.01, group = grpH)
+mergePct  = input.float(0.05, "Merge distance (× daily ATR)", 0.0, 1.0, 0.01, group = grpH)
+maxLevels = input.int(150, "Max active levels", 10, 150, group = grpH)
+
+grpV      = "Visuals"
+colLo     = input.color(color.new(#8a96ff, 85), "Weak level", group = grpV)
+colHi     = input.color(color.new(#2f3cff, 5), "Strong level", group = grpV)
+hotAt     = input.float(4.0, "Full intensity at", 0.5, 30.0, 0.1, group = grpV)
+glow      = input.bool(true, "Glow halo", group = grpV)
+showSwept = input.bool(true, "Keep taken heatmap levels", group = grpV)
+sweptKeep = input.int(40, "Taken heatmap levels kept", 0, 60, group = grpV)
+labelSwp  = input.bool(true, "Label TAKEN / GRAB on strong levels", group = grpV)
+strongMin = input.float(2.0, "Strong level = intensity ≥", 0.1, 30.0, 0.1, group = grpV)
+hideWeak  = input.bool(true, "Hide WEAK heatmap levels", group = grpV, tooltip = "Weak levels (below the threshold) are still tracked in the background — they can grow from retests or new swings merging in — but are not drawn, labelled or listed until they reach the threshold.")
+weakBelow = input.float(2.0, "Hide levels below strength (×) — 2 = Solid", 0.1, 10.0, 0.1, group = grpV)
+
+grpG      = "Age & retests"
+showAge   = input.bool(true, "Show level age (e.g. 3d, 14h)", group = grpG)
+showTests = input.bool(true, "Count retests", group = grpG, tooltip = "A retest = price comes up to (or into) the level and closes back on the original side without taking it. Each new retest means stops are still resting there and more are being added.")
+testProx  = input.float(0.5, "Retest counts within (× band width) of the level", 0.0, 5.0, 0.1, group = grpG)
+testGap   = input.int(3, "Bars between separate retests", 1, 100, group = grpG)
+testBoost = input.float(1.25, "Heatmap strength × per retest", 1.0, 3.0, 0.05, group = grpG, tooltip = "Each retest multiplies a heatmap level's strength by this (time decay still applies). Untested levels just keep fading with the half-life below.")
+maxBoost  = input.int(4, "Max retests that boost strength", 0, 20, group = grpG)
+
+// ─── Shared ─────────────────────────────────────────────────────
+chartSec   = timeframe.in_seconds()
+ms         = chartSec * 1000
+sweptColor = color.new(color.gray, 55)
+noCol       = color.new(color.black, 100)
+dATR       = request.security(syminfo.tickerid, "D", ta.atr(14)[1], lookahead = barmerge.lookahead_on)
+mergeDist  = mergePct * nz(dATR, 0.0)
+bandW      = math.max(syminfo.mintick, bandAtr * nz(dATR, 0.0))
+decay      = math.pow(0.5, chartSec / (halfLifeH * 3600.0))
+labelX     = time + 3 * ms
+lblSz      = lblSize == "Small" ? size.small : lblSize == "Large" ? size.large : size.normal
+lblBg      = color.new(#131722, 15)
+
+// Absorbed share of a band: 0 = untouched, 1 = traded all the way through
+absorbedOf(int side, float price, float w, float deepest) =>
+    float a = na(deepest) or w <= 0 ? 0.0 : (side == 1 ? deepest - price : price - deepest) / w
+    math.max(0.0, math.min(1.0, a))
+
+fmtPct(float x) =>
+    str.tostring(math.round(x * 100)) + "%"
+
+// Age of a level: hours under 2 days, days after
+fmtAge(int t0) =>
+    float hrs = na(t0) ? na : (time - t0) / 3600000.0
+    na(hrs) ? "" : hrs < 48 ? str.tostring(math.max(0, math.round(hrs))) + "h" : str.tostring(math.round(hrs / 24)) + "d"
+
+// " · 3d · retested 2×" suffix
+ageTests(int t0, int tests) =>
+    string t = showAge ? " · " + fmtAge(t0) : ""
+    if showTests and tests > 0
+        t += " · retested " + str.tostring(tests) + "×"
+    t
+
+// True when this bar is a NEW retest: came within prox of the level and closed back
+isRetest(int side, float price, float prox, int lastBar) =>
+    bool near   = side == 1 ? high >= price - prox : low <= price + prox
+    bool back   = side == 1 ? close < price : close > price
+    showTests and near and back and (na(lastBar) or bar_index - lastBar > testGap)
+
+// Bold text sitting right on top of a zone (no bubble)
+zoneText(int x, float y, string txt) =>
+    label.new(x, y, txt, xloc = xloc.bar_time, style = label.style_label_down, color = color.new(color.black, 100), textcolor = zoneTxtCol, size = lblSz, text_formatting = text.format_bold)
+
+// Grey absorbed part + coloured remaining part of a band
+drawBand(array<box> bxs, int side, float price, float w, float a, int x1, int x2, color leftC) =>
+    float far  = side == 1 ? price + w : price - w
+    float edge = side == 1 ? price + a * w : price - a * w
+    if a > 0
+        bxs.push(box.new(x1, math.max(price, edge), x2, math.min(price, edge), xloc = xloc.bar_time, bgcolor = absCol, border_color = noCol))
+    if a < 1
+        bxs.push(box.new(x1, math.max(edge, far), x2, math.min(edge, far), xloc = xloc.bar_time, bgcolor = leftC, border_color = noCol))
+    bxs.size()
+
+// ─── Real executed orders (footprint) ───────────────────────────
+footprint fp = request.footprint(fpTicks)
+
+// Buy / sell volume that traded inside [lo, hi] on this bar
+bandOrders(footprint f, float lo, float hi) =>
+    float b = 0.0
+    float s = 0.0
+    if not na(f)
+        array<volume_row> rows = f.rows()
+        for r in rows
+            float mid = (r.up_price() + r.down_price()) / 2
+            if mid >= lo and mid <= hi
+                b += nz(r.buy_volume())
+                s += nz(r.sell_volume())
+    [b, s]
+
+// Aggressors = orders hitting the zone (buys into highs, sells into lows)
+ordAggr(int side, float b, float s) =>
+    side == 1 ? b : s
+ordResp(int side, float b, float s) =>
+    side == 1 ? s : b
+
+// Unit of the order size for this market
+unitW = syminfo.type == "futures" ? "contracts" : syminfo.type == "crypto" ? "coins" : syminfo.type == "forex" ? "lots" : "shares"
+
+// Highs hold BUY-side liquidity (buy stops above), lows hold SELL-side liquidity (sell stops below)
+sideName(int side) =>
+    side == 1 ? "Buy-side liquidity" : "Sell-side liquidity"
+sideShort(int side) =>
+    side == 1 ? "Buy-side" : "Sell-side"
+sideCol(int side) =>
+    side == 1 ? #26a69a : #ef5350
+
+fmtVol(float v) =>
+    str.tostring(v, format.volume)
+
+fmtDelta(float d) =>
+    (d >= 0 ? "+" : "") + str.tostring(d, format.volume)
+
+// Strength words
+// Heatmap: × = relative volume of the swing × timeframe weight, stacked, decayed
+heatStrength(float x) =>
+    x >= 3 ? "Strong" : x >= 2 ? "Solid" : x >= 1 ? "Average" : "Weak"
+// Key levels: the higher the timeframe, the more stops rest there
+keyStrength(string name) =>
+    str.startswith(name, "PM") ? "Very strong" : str.startswith(name, "PW") ? "Strong" : str.startswith(name, "PD") or str.startswith(name, "NY") or str.startswith(name, "PreMkt") ? "Solid" : "Average"
+
+ordTxt(int side, float b, float s) =>
+    string t = ""
+    if useOrders and b + s > 0
+        t := "\nBuy orders " + fmtVol(b) + " " + unitW + " · Sell orders " + fmtVol(s) + " " + unitW + " · Δ " + fmtDelta(b - s)
+    t
+
+// Zone held while aggressors dominated → passive orders absorbed them
+isAbsorbing(int side, float b, float s, bool taken) =>
+    useOrders and not taken and ordAggr(side, b, s) > ordResp(side, b, s) and ordAggr(side, b, s) > 0
+
+avgBarVol = ta.sma(volume, 20)
+var array<label> sigLabels = array.new<label>()
+
+// Absorption signal on one bar at one zone
+//  side  1 (buy-side above):  heavy BUY orders + close back below  → WATCH EXIT
+//  side -1 (sell-side below): heavy SELL orders + close back above → WATCH LONG
+absorbSignal(int side, float lvl, float bBar, float sBar) =>
+    float aggr = ordAggr(side, bBar, sBar)
+    float resp = ordResp(side, bBar, sBar)
+    bool  heavy  = aggr >= heavyMult * nz(avgBarVol) and aggr > resp * domRatio
+    bool  reject = side == 1 ? close < lvl : close > lvl
+    showSig and useOrders and barstate.isconfirmed and heavy and reject
+
+drawSignal(int side, string name, float lvl, float bBar, float sBar) =>
+    string txt = side == 1 ? "WATCH EXIT\n" + name + " · sellers absorbed " + fmtVol(bBar) + " buys" : "WATCH LONG\n" + name + " · buyers absorbed " + fmtVol(sBar) + " sells"
+    label lb = side == 1 ? label.new(bar_index, high, txt, style = label.style_label_down, color = #ef5350, textcolor = color.white, size = size.small, text_formatting = text.format_bold) : label.new(bar_index, low, txt, style = label.style_label_up, color = #26a69a, textcolor = color.white, size = size.small, text_formatting = text.format_bold)
+    sigLabels.push(lb)
+    if sigLabels.size() > 60
+        sigLabels.shift().delete()
+    sigLabels.size()
+
+var array<box>   bandBoxes  = array.new<box>()
+var array<label> infoLabels = array.new<label>()
+
+// ════════════════════════════════════════════════════════════════
+// LAYER 1 · KEY LEVELS
+// ════════════════════════════════════════════════════════════════
+type Key
+    string name
+    int    side
+    float  price   = na
+    float  w       = na
+    float  deepest = na
+    int    x1      = na
+    bool   taken   = false
+    bool   grabbed = false
+    int    takenT  = na
+    line   ln
+    label  lb
+    float  ordB    = 0.0
+    float  ordS    = 0.0
+    bool   sigFired = false
+    int    tests    = 0
+    int    lastTest = na
+
+// Returns [takenNow, grabNow, exitNow, enterNow]
+updKey(Key k, float p, int t, bool on, footprint f) =>
+    bool takenNow = false
+    bool grabNow  = false
+    bool exitNow  = false
+    bool enterNow = false
+    if not on or na(p)
+        if not na(k.ln)
+            k.ln.delete()
+            k.lb.delete()
+        k.price := na
+    else
+        if na(k.price) or p != k.price
+            k.price   := p
+            k.w       := bandW
+            k.deepest := na
+            k.taken   := false
+            k.grabbed := false
+            k.ordB    := 0.0
+            k.ordS    := 0.0
+            k.sigFired := false
+            k.tests    := 0
+            k.lastTest := na
+            k.x1      := na(t) ? time : t
+            if not na(k.ln)
+                k.ln.delete()
+                k.lb.delete()
+            k.ln := line.new(k.x1, p, time, p, xloc = xloc.bar_time, extend = extend.right, color = keyCol, width = 2)
+            k.lb := label.new(labelX, p, k.name, xloc = xloc.bar_time, style = label.style_label_left, color = lblBg, textcolor = keyCol, size = lblSz)
+        if not k.taken
+            bool into = k.side == 1 ? high > p : low < p
+            if into
+                k.deepest := k.side == 1 ? math.max(nz(k.deepest, high), high) : math.min(nz(k.deepest, low), low)
+                float ob = 0.0
+                float os = 0.0
+                if useOrders
+                    [b1, s1] = bandOrders(f, k.side == 1 ? p : p - k.w, k.side == 1 ? p + k.w : p)
+                    ob := b1
+                    os := s1
+                    k.ordB += ob
+                    k.ordS += os
+                if absorbedOf(k.side, p, k.w, k.deepest) >= 1
+                    k.taken  := true
+                    k.takenT := time
+                    takenNow := true
+                    if hideTaken
+                        k.ln.delete()
+                        k.lb.delete()
+                        k.ln := na
+                        k.lb := na
+                    else
+                        k.ln.set_color(sweptColor)
+                        k.ln.set_style(line.style_dashed)
+                        k.ln.set_width(1)
+                        k.lb.set_text(k.name + " ✓ taken")
+                        k.lb.set_textcolor(color.gray)
+                else if (k.side == 1 ? close < p : close > p)
+                    grabNow := true
+                    k.grabbed := true
+                    if sigKeys and not k.sigFired and absorbSignal(k.side, p, ob, os)
+                        k.sigFired := true
+                        drawSignal(k.side, k.name, p, ob, os)
+                        if k.side == 1
+                            exitNow := true
+                        else
+                            enterNow := true
+        if not k.taken and isRetest(k.side, p, testProx * k.w, k.lastTest)
+            k.tests    += 1
+            k.lastTest := bar_index
+    if not na(k.lb)
+        k.lb.set_x(labelX)
+    [takenNow, grabNow, exitNow, enterNow]
+
+// Session tracker: returns the last COMPLETED session's high/low and its end time
+trackSess(string tf, string sess, string z) =>
+    bool inS = not na(time(tf, sess, z))
+    var float curH  = na
+    var float curL  = na
+    var float doneH = na
+    var float doneL = na
+    var int   doneT = na
+    if inS and not inS[1]
+        curH := high
+        curL := low
+    else if inS
+        curH := math.max(curH, high)
+        curL := math.min(curL, low)
+    if not inS and inS[1]
+        doneH := curH
+        doneL := curL
+        doneT := time
+    [doneH, doneL, doneT]
+
+allSess(string tf) =>
+    [nyH, nyL, nyT] = trackSess(tf, sessNY, tz)
+    [prH, prL, prT] = trackSess(tf, sessPre, tz)
+    [nyH, nyL, nyT, prH, prL, prT]
+
+// Fixed-timeframe sources (non-repainting: [1] + lookahead_on)
+[pdH, pdL, pdT] = request.security(syminfo.tickerid, "D", [high[1], low[1], time[1]], lookahead = barmerge.lookahead_on)
+[pwH, pwL, pwT] = request.security(syminfo.tickerid, "W", [high[1], low[1], time[1]], lookahead = barmerge.lookahead_on)
+[pmH, pmL, pmT] = request.security(syminfo.tickerid, "M", [high[1], low[1], time[1]], lookahead = barmerge.lookahead_on)
+
+sessTf = chartSec <= 900 ? timeframe.period : "15"
+[nyH, nyL, nyT, prH, prL, prT] = request.security(syminfo.tickerid, sessTf, allSess(sessTf))
+
+bool intraday = chartSec < 86400
+// skip NY H/L when it duplicates the previous day high/low
+bool nyHOn = showNY and intraday and not (showD and math.abs(nyH - pdH) <= syminfo.mintick)
+bool nyLOn = showNY and intraday and not (showD and math.abs(nyL - pdL) <= syminfo.mintick)
+
+var array<Key> keys = array.from(Key.new("PDH", 1), Key.new("PDL", -1), Key.new("PWH", 1), Key.new("PWL", -1), Key.new("PMH", 1), Key.new("PML", -1), Key.new("NY H", 1), Key.new("NY L", -1), Key.new("PreMkt H", 1), Key.new("PreMkt L", -1))
+
+array<float> kPrice = array.from(pdH, pdL, pwH, pwL, pmH, pmL, nyH, nyL, prH, prL)
+array<int>   kTime  = array.from(pdT, pdT, pwT, pwT, pmT, pmT, nyT, nyT, prT, prT)
+array<bool>  kOn    = array.from(showD and chartSec <= 86400, showD and chartSec <= 86400, showW and chartSec <= 604800, showW and chartSec <= 604800, showM, showM, nyHOn, nyLOn, showPre and intraday, showPre and intraday)
+
+bool keyTaken = false
+bool keyGrab  = false
+bool sigExit  = false
+bool sigEnter = false
+for [i, k] in keys
+    [tk, gb, ex, en] = updKey(k, kPrice.get(i), kTime.get(i), kOn.get(i), fp)
+    sigExit  := sigExit or ex
+    sigEnter := sigEnter or en
+    keyTaken := keyTaken or tk
+    keyGrab  := keyGrab or gb
+
+// ════════════════════════════════════════════════════════════════
+// LAYER 2 · HTF SWING HEATMAP
+// ════════════════════════════════════════════════════════════════
+type Level
+    float price
+    float intensity
+    int   side
+    float w
+    float deepest
+    int   x1
+    bool  grabbed = false
+    line  core
+    line  halo
+    float ordB = 0.0
+    float ordS = 0.0
+    bool  sigFired = false
+    int   tests    = 0
+    int   lastTest = na
+
+var array<Level> levels      = array.new<Level>()
+var array<line>  sweptLines  = array.new<line>()
+var array<label> sweptLabels = array.new<label>()
+var array<box>   takenBoxes  = array.new<box>()
+
+colorFor(float inten) =>
+    color.from_gradient(math.min(inten, hotAt), 0.0, hotAt, colLo, colHi)
+
+isWeak(Level l) =>
+    hideWeak and l.intensity < weakBelow
+
+haloOf(color c) =>
+    color.new(c, 100 - (100 - color.t(c)) * 0.3)
+
+// Liquidity still resting = intensity × share of the band not yet absorbed
+leftInt(Level l) =>
+    l.intensity * (1 - absorbedOf(l.side, l.price, l.w, l.deepest))
+
+dropLevel(int i) =>
+    Level l = levels.get(i)
+    l.core.delete()
+    if not na(l.halo)
+        l.halo.delete()
+    levels.remove(i)
+
+pushLabel(label lb) =>
+    sweptLabels.push(lb)
+    if sweptLabels.size() > 40
+        sweptLabels.shift().delete()
+    sweptLabels.size()
+
+addLevel(float price, float inten, int side, int t) =>
+    bool merged = false
+    if mergeDist > 0
+        for l in levels
+            if l.side == side and math.abs(l.price - price) <= mergeDist
+                float tot = l.intensity + inten
+                l.price     := (l.price * l.intensity + price * inten) / tot
+                l.intensity := tot
+                l.w         := math.max(l.w, bandW)
+                l.x1        := math.min(l.x1, t)
+                l.core.set_y1(l.price)
+                l.core.set_y2(l.price)
+                if not na(l.halo)
+                    l.halo.set_y1(l.price)
+                    l.halo.set_y2(l.price)
+                merged := true
+                break
+    if not merged
+        color c   = colorFor(inten)
+        line halo = glow ? line.new(t, price, time, price, xloc = xloc.bar_time, extend = extend.right, color = haloOf(c), width = 8) : na
+        line core = line.new(t, price, time, price, xloc = xloc.bar_time, extend = extend.right, color = c, width = 2)
+        levels.push(Level.new(price, inten, side, bandW, na, t, false, core, halo))
+        if levels.size() > maxLevels
+            int   wi = 0
+            float wv = leftInt(levels.get(0))
+            for [j, lv] in levels
+                float li = leftInt(lv)
+                if li < wv
+                    wv := li
+                    wi := j
+            dropLevel(wi)
+
+// HTF pivot (confirmed, non-repainting): price, pivot bar time, relative volume
+pivData() =>
+    ph  = ta.pivothigh(high, pivLen, pivLen)
+    pl  = ta.pivotlow(low, pivLen, pivLen)
+    rel = nz(volume / ta.sma(volume, 20), 1.0)
+    [ph[1], pl[1], time[pivLen + 1], rel[pivLen + 1]]
+
+[h1H, h1L, h1T, h1R] = request.security(syminfo.tickerid, "60",  pivData(), gaps = barmerge.gaps_on, lookahead = barmerge.lookahead_on)
+[h4H, h4L, h4T, h4R] = request.security(syminfo.tickerid, "240", pivData(), gaps = barmerge.gaps_on, lookahead = barmerge.lookahead_on)
+[d1H, d1L, d1T, d1R] = request.security(syminfo.tickerid, "D",   pivData(), gaps = barmerge.gaps_on, lookahead = barmerge.lookahead_on)
+
+// Decay / absorb / take / grab / fade existing levels
+bool heatTaken = false
+bool heatGrab  = false
+
+int n = levels.size()
+if n > 0
+    for i = n - 1 to 0
+        Level l = levels.get(i)
+        l.intensity *= decay
+        bool into = l.side == 1 ? high > l.price : low < l.price
+        bool done = false
+        if into
+            l.deepest := l.side == 1 ? math.max(nz(l.deepest, high), high) : math.min(nz(l.deepest, low), low)
+            float hb = 0.0
+            float hs = 0.0
+            if useOrders
+                [b2, s2] = bandOrders(fp, l.side == 1 ? l.price : l.price - l.w, l.side == 1 ? l.price + l.w : l.price)
+                hb := b2
+                hs := s2
+                l.ordB += hb
+                l.ordS += hs
+            bool strong = l.intensity >= strongMin
+            if absorbedOf(l.side, l.price, l.w, l.deepest) >= 1
+                // TAKEN: traded through the whole band
+                done := true
+                if strong
+                    heatTaken := true
+                    if labelSwp and not hideTaken
+                        pushLabel(label.new(time, l.price, "TAKEN", xloc = xloc.bar_time, style = l.side == 1 ? label.style_label_down : label.style_label_up, color = color.new(#2a2e39, 0), textcolor = color.white, size = size.tiny))
+                if showTakenBand and sweptKeep > 0
+                    takenBoxes.push(box.new(l.x1, math.max(l.price, l.price + l.side * l.w), time, math.min(l.price, l.price + l.side * l.w), xloc = xloc.bar_time, bgcolor = color.new(#b2b5be, 75), border_color = noCol))
+                    if takenBoxes.size() > sweptKeep
+                        takenBoxes.shift().delete()
+                if not na(l.halo)
+                    l.halo.delete()
+                if showSwept and sweptKeep > 0 and not hideTaken
+                    l.core.set_x2(time)
+                    l.core.set_extend(extend.none)
+                    l.core.set_color(sweptColor)
+                    l.core.set_width(1)
+                    l.core.set_style(line.style_dashed)
+                    sweptLines.push(l.core)
+                    if sweptLines.size() > sweptKeep
+                        sweptLines.shift().delete()
+                else
+                    l.core.delete()
+                levels.remove(i)
+            else if (l.side == 1 ? close < l.price : close > l.price)
+                // GRAB: wicked into the band, closed back
+                if strong
+                    heatGrab := true
+                    if labelSwp and not l.grabbed
+                        pushLabel(label.new(time, l.price, "GRAB", xloc = xloc.bar_time, style = l.side == 1 ? label.style_label_down : label.style_label_up, color = color.new(#ff9f1a, 0), textcolor = color.black, size = size.tiny))
+                l.grabbed := true
+                if sigHeat and not l.sigFired and l.intensity >= sigMinStr and absorbSignal(l.side, l.price, hb, hs)
+                    l.sigFired := true
+                    drawSignal(l.side, (l.side == 1 ? "Buy-side " : "Sell-side ") + str.tostring(l.intensity, "#.#") + "×", l.price, hb, hs)
+                    if l.side == 1
+                        sigExit := true
+                    else
+                        sigEnter := true
+        if not done and isRetest(l.side, l.price, testProx * l.w, l.lastTest)
+            l.tests    += 1
+            l.lastTest := bar_index
+            if l.tests <= maxBoost
+                l.intensity *= testBoost
+        if not done and leftInt(l) < minInt
+            dropLevel(i)
+
+// Add new HTF levels (only from timeframes ≥ chart timeframe)
+if useH1 and chartSec <= 3600
+    if not na(h1H)
+        addLevel(h1H, h1R * 1.0, 1, h1T)
+    if not na(h1L)
+        addLevel(h1L, h1R * 1.0, -1, h1T)
+if useH4 and chartSec <= 14400
+    if not na(h4H)
+        addLevel(h4H, h4R * 2.0, 1, h4T)
+    if not na(h4L)
+        addLevel(h4L, h4R * 2.0, -1, h4T)
+if useD1 and chartSec <= 86400
+    if not na(d1H)
+        addLevel(d1H, d1R * 3.0, 1, d1T)
+    if not na(d1L)
+        addLevel(d1L, d1R * 3.0, -1, d1T)
+
+// ─── Last bar: colours, bands, absorption labels ────────────────
+if barstate.islast
+    for b in bandBoxes
+        b.delete()
+    bandBoxes.clear()
+    for lb in infoLabels
+        lb.delete()
+    infoLabels.clear()
+
+    bool bandsAll = bandMode == "Key levels + top heatmap"
+    bool bandsOn  = bandMode != "Off"
+
+    // Text sitting ON TOP of each liquidity zone
+    int zoneX = time + zoneLblOff * ms
+    array<float>  zY = array.new<float>()
+    array<string> zS = array.new<string>()
+
+    // Key levels
+    for k in keys
+        if not na(k.price) and not na(k.lb)
+            float top = math.max(k.price, k.price + k.side * k.w)
+            if k.taken
+                if showTakenBand and bandsOn
+                    drawBand(bandBoxes, k.side, k.price, k.w, 1.0, k.x1, nz(k.takenT, time), leftKey)
+                    if showZoneLbl
+                        infoLabels.push(zoneText(nz(k.takenT, time), top, k.name + "  TAKEN  ·  Absorbed 100% | Left 0%"))
+            else
+                float a = absorbedOf(k.side, k.price, k.w, k.deepest)
+                if bandsOn and (bandsAll or not na(k.deepest))
+                    drawBand(bandBoxes, k.side, k.price, k.w, a, k.x1, labelX, leftKey)
+                    if showZoneLbl
+                        string st = isAbsorbing(k.side, k.ordB, k.ordS, k.taken) ? "  ABSORBED" : a > 0 ? (k.grabbed ? "  GRAB" : "  PARTIAL") : ""
+                        zY.push(top)
+                        zS.push(k.name + " · " + sideName(k.side) + " (" + keyStrength(k.name) + ageTests(k.x1, k.tests) + ")" + st + "  ·  Absorbed " + fmtPct(a) + " | Left " + fmtPct(1 - a) + ordTxt(k.side, k.ordB, k.ordS))
+                    k.lb.set_text("")
+                    k.lb.set_color(noCol)
+                else
+                    k.lb.set_text(k.name + "  ·  Absorbed " + fmtPct(a) + " | Left " + fmtPct(1 - a))
+
+    // Heatmap: rank by liquidity left; band + label the strongest and any touched
+    array<float> lefts = array.new<float>()
+    for l in levels
+        lefts.push(isWeak(l) ? -1.0 : leftInt(l))
+    array<int> rank = lefts.size() > 0 ? lefts.sort_indices(order.descending) : array.new<int>()
+    array<bool> pick = array.new<bool>(levels.size(), false)
+    for [r, idx] in rank
+        if r < heatTopN
+            pick.set(idx, true)
+    int lblCount = 0
+    for [i, l] in levels
+        bool weakL = isWeak(l)
+        color c = weakL ? noCol : colorFor(leftInt(l))
+        l.core.set_color(c)
+        if not na(l.halo)
+            l.halo.set_color(weakL ? noCol : haloOf(c))
+        bool touched = not na(l.deepest)
+        if not weakL and bandsOn and (touched or (bandsAll and pick.get(i)))
+            float a = absorbedOf(l.side, l.price, l.w, l.deepest)
+            drawBand(bandBoxes, l.side, l.price, l.w, a, l.x1, labelX, leftHeat)
+            if showHeatLbl and lblCount < 50
+                float top = math.max(l.price, l.price + l.side * l.w)
+                string st = isAbsorbing(l.side, l.ordB, l.ordS, false) ? "  ABSORBED" : a > 0 ? (l.grabbed ? "  GRAB" : "  PARTIAL") : ""
+                zY.push(top)
+                zS.push((l.side == 1 ? "▲ " : "▼ ") + sideName(l.side) + " " + str.tostring(l.intensity, "#.#") + "× (" + heatStrength(l.intensity) + ageTests(l.x1, l.tests) + ")" + st + "  ·  Absorbed " + fmtPct(a) + " | Left " + fmtPct(1 - a) + ordTxt(l.side, l.ordB, l.ordS))
+                lblCount += 1
+
+    // Stack texts that sit close together into one label (no overlap)
+    if zY.size() > 0
+        array<int> zo = zY.sort_indices(order.descending)
+        float gap = txtGap * nz(dATR, 0.0)
+        int gi = 0
+        int nz_ = zo.size()
+        while gi < nz_
+            float yTop = zY.get(zo.get(gi))
+            string txt = zS.get(zo.get(gi))
+            int gj = gi + 1
+            while gj < nz_ and zY.get(zo.get(gj - 1)) - zY.get(zo.get(gj)) <= gap
+                txt += "\n" + zS.get(zo.get(gj))
+                gj += 1
+            infoLabels.push(zoneText(zoneX, yTop, txt))
+            gi := gj
+
+    if showZoneLbl and showTakenBand and takenLblN > 0
+        int nT = takenBoxes.size()
+        if nT > 0
+            for j = nT - 1 to math.max(0, nT - takenLblN)
+                box tb = takenBoxes.get(j)
+                infoLabels.push(zoneText(tb.get_right(), tb.get_top(), "TAKEN  ·  Absorbed 100% | Left 0%"))
+
+
+// ─── Absorption table (always on screen) ────────────────────────
+tPos = tblPos == "Top right" ? position.top_right : tblPos == "Bottom right" ? position.bottom_right : tblPos == "Top left" ? position.top_left : tblPos == "Bottom left" ? position.bottom_left : position.middle_right
+tSz  = tblSize == "Tiny" ? size.tiny : tblSize == "Large" ? size.large : tblSize == "Normal" ? size.normal : size.small
+var table tbl = table.new(tPos, 10, 40, bgcolor = color.new(#131722, 10), border_color = color.new(#363a45, 0), border_width = 1, frame_color = color.new(#363a45, 0), frame_width = 1)
+
+cell(int c, int r, string t, color tc) =>
+    tbl.cell(c, r, t, text_color = tc, text_size = tSz, text_halign = c == 0 ? text.align_left : text.align_right)
+
+statusOf(bool taken, bool grabbed, float a, bool absorbing) =>
+    taken ? "TAKEN" : absorbing ? "ABSORBED" : grabbed ? "GRAB" : a > 0 ? "Partial" : "Untouched"
+
+statusCol(string st) =>
+    st == "TAKEN" ? color.gray : st == "ABSORBED" ? #ff5252 : st == "GRAB" ? #ff9f1a : st == "Partial" ? #ffd600 : #26a69a
+
+if showTable and barstate.islast
+    tbl.clear(0, 0, 9, 39)
+    color hd = color.new(#d1d4dc, 0)
+    cell(0, 0, "Level", hd)
+    cell(1, 0, "Side", hd)
+    cell(2, 0, "Price", hd)
+    cell(3, 0, "Strength", hd)
+    cell(4, 0, "Absorbed", hd)
+    cell(5, 0, "Left", hd)
+    cell(6, 0, "Buy " + unitW, hd)
+    cell(7, 0, "Sell " + unitW, hd)
+    cell(8, 0, "Δ", hd)
+    cell(9, 0, "Status", hd)
+    int row = 1
+    // key levels, highest price first
+    array<float> kp = array.new<float>()
+    for k in keys
+        kp.push(nz(k.price, -1e12))
+    array<int> kOrd = kp.sort_indices(order.descending)
+    for idx in kOrd
+        Key k = keys.get(idx)
+        if not na(k.price) and not (hideTaken and k.taken)
+            float a  = k.taken ? 1.0 : absorbedOf(k.side, k.price, k.w, k.deepest)
+            string st = statusOf(k.taken, k.grabbed, a, isAbsorbing(k.side, k.ordB, k.ordS, k.taken))
+            color tc = k.taken ? color.gray : keyCol
+            cell(0, row, k.name, tc)
+            cell(1, row, sideShort(k.side), sideCol(k.side))
+            cell(2, row, str.tostring(k.price, format.mintick), tc)
+            cell(3, row, keyStrength(k.name) + ageTests(k.x1, k.tests), tc)
+            cell(4, row, fmtPct(a), a > 0 ? absCol : color.gray)
+            cell(5, row, fmtPct(1 - a), tc)
+            cell(6, row, useOrders ? fmtVol(k.ordB) : "–", #26a69a)
+            cell(7, row, useOrders ? fmtVol(k.ordS) : "–", #ef5350)
+            cell(8, row, useOrders ? fmtDelta(k.ordB - k.ordS) : "–", k.ordB - k.ordS >= 0 ? #26a69a : #ef5350)
+            cell(9, row, st, statusCol(st))
+            row += 1
+    // nearest heatmap levels above and below price
+    if tblHeat > 0 and levels.size() > 0
+        array<float> above = array.new<float>()
+        array<float> below = array.new<float>()
+        for l in levels
+            if not isWeak(l)
+                if l.price >= close
+                    above.push(l.price)
+                else
+                    below.push(l.price)
+        above.sort(order.ascending)
+        below.sort(order.descending)
+        array<float> pickP = array.new<float>()
+        for i = 0 to math.min(tblHeat, above.size()) - 1
+            if above.size() > 0
+                pickP.push(above.get(i))
+        for i = 0 to math.min(tblHeat, below.size()) - 1
+            if below.size() > 0
+                pickP.push(below.get(i))
+        pickP.sort(order.descending)
+        if pickP.size() > 0
+            cell(0, row, "Heatmap", hd)
+            row += 1
+            for pp in pickP
+                for l in levels
+                    if l.price == pp and row < 40 and not isWeak(l)
+                        float a  = absorbedOf(l.side, l.price, l.w, l.deepest)
+                        string st = statusOf(false, l.grabbed, a, isAbsorbing(l.side, l.ordB, l.ordS, false))
+                        color hc = color.new(#8a96ff, 0)
+                        cell(0, row, (l.side == 1 ? "▲ Swing high" : "▼ Swing low"), hc)
+                        cell(1, row, sideShort(l.side), sideCol(l.side))
+                        cell(2, row, str.tostring(l.price, format.mintick), hc)
+                        cell(3, row, str.tostring(l.intensity, "#.#") + "× " + heatStrength(l.intensity) + ageTests(l.x1, l.tests), hc)
+                        cell(4, row, fmtPct(a), a > 0 ? absCol : color.gray)
+                        cell(5, row, fmtPct(1 - a), hc)
+                        cell(6, row, useOrders ? fmtVol(l.ordB) : "–", #26a69a)
+                        cell(7, row, useOrders ? fmtVol(l.ordS) : "–", #ef5350)
+                        cell(8, row, useOrders ? fmtDelta(l.ordB - l.ordS) : "–", l.ordB - l.ordS >= 0 ? #26a69a : #ef5350)
+                        cell(9, row, st, statusCol(st))
+                        row += 1
+                        break
+
+// ─── Alerts ─────────────────────────────────────────────────────
+alertcondition(sigEnter, "WATCH LONG — sell-side absorbed", "MTF Liq WATCH LONG: heavy sell orders absorbed at sell-side liquidity on {{ticker}} at {{close}} — check for confirmation")
+alertcondition(sigExit, "WATCH EXIT — buy-side absorbed", "MTF Liq WATCH EXIT: heavy buy orders absorbed at buy-side liquidity on {{ticker}} at {{close}} — consider taking profit")
+alertcondition(keyGrab, "Key level liquidity GRAB", "MTF Liq: key level (PDH/PDL/NY/premarket…) swept and rejected on {{ticker}} at {{close}}")
+alertcondition(keyTaken, "Key level TAKEN", "MTF Liq: key level liquidity fully taken on {{ticker}} at {{close}}")
+alertcondition(heatGrab, "Strong HTF liquidity GRAB", "MTF Liq: strong HTF level swept and rejected on {{ticker}} at {{close}}")
+alertcondition(heatTaken, "Strong HTF liquidity TAKEN", "MTF Liq: strong HTF level fully taken on {{ticker}} at {{close}}")
+
+// ════════════════════════════════════════════════════════════════
+// ADD-ON · LARGEST POSITIVE GAMMA ABOVE / BELOW (paste at the very bottom
+// of "MTF Liquidity Map + Absorption + Orders")
+//
+// TradingView has no options data, so the gamma by strike is typed in
+// from your options / GEX app:  strike=gamma, comma separated, e.g.
+//     9=400, 9.5=120, 10=850, 10.5=-300, 11=1200
+// Positive gamma = dealers are long gamma there: price tends to slow down,
+// stall or pin at that strike.
+//   BUY side  · no key level or visible heatmap level left ABOVE the price:
+//               the largest positive gamma strike above = SOLID GREEN line.
+//   SELL side · no level left BELOW the price: the largest positive gamma
+//               strike below = SOLID RED line.
+// Each line carries bold dark text on top: LARGEST POSITIVE GAMMA + price.
+// NEGATIVE gamma (optional, orange) = dealers are short gamma there: they sell into drops and buy into
+//   rallies, so price tends to SPEED UP through that strike (trap door below, squeeze above).
+//   The largest negative strike below and above the price are drawn as solid orange lines with
+//   LARGEST NEGATIVE GAMMA on top.
+// BUY NOW / SELL NOW (closed candles, latest session only, once per level — the gamma list is today's):
+//   BUY NOW  · floor held : the candle dips to the largest +gamma BELOW and closes green, back above it
+//   BUY NOW  · squeeze    : the candle closes above the largest -gamma ABOVE
+//   SELL NOW · ceiling    : the candle tags the largest +gamma ABOVE and closes red, back below it
+//   SELL NOW · trap door  : the candle closes below the largest -gamma BELOW
+//   Each shows the price, a stop just beyond the level and the next gamma line as the target.
+//   Rules from how dealer gamma tends to act, not a backtested edge: confirm with your own read.
+// ════════════════════════════════════════════════════════════════
+grpGm    = "Largest positive / negative gamma (from your options app)"
+gmList   = input.text_area("", "Gamma by strike (strike=gamma, comma separated)", group = grpGm, tooltip = "Paste from your GEX app, e.g.  9=400, 9.5=120, 10=850, 10.5=-300, 11=1200. Positive values give the green / red lines, negative values the orange lines. Update it each morning (open interest changes daily).")
+gmMode   = input.string("Always", "Show", ["Always", "Only when no levels on that side"], group = grpGm)
+gmRange  = input.float(15.0, "Look within (% from price)", 0.5, 100.0, 0.5, group = grpGm)
+gmBelow  = input.bool(true, "Also the sell side (below the price)", group = grpGm)
+gmColUp  = input.color(#00e676, "Line above (buy side)", group = grpGm)
+gmColDn  = input.color(#ff1744, "Line below (sell side)", group = grpGm)
+gmNeg    = input.bool(true, "Also the largest NEGATIVE gamma (below and above)", group = grpGm)
+gmColNeg = input.color(#ff9800, "Line negative gamma", group = grpGm)
+gmTxtCol = input.color(color.black, "Text color", group = grpGm)
+gmWidth  = input.int(3, "Line width", 1, 6, group = grpGm)
+gmSig    = input.bool(true, "BUY NOW / SELL NOW signals at the gamma lines", group = grpGm)
+gmTouch  = input.float(0.3, "Touch = within (% of the level)", 0.0, 5.0, 0.05, group = grpGm)
+gmStopP  = input.float(0.5, "Stop beyond the level (%)", 0.05, 10.0, 0.05, group = grpGm)
+
+// the strike with the largest positive gamma above (dir 1) or below (dir -1) the price, within the range
+gmBest(string list, int dir, float px, float rngPct, int sgn = 1) =>
+    float bestK = na
+    float bestG = na
+    for item in str.split(list, ",")
+        array<string> parts = str.split(str.trim(item), "=")
+        if parts.size() == 2
+            float strike = str.tonumber(str.trim(parts.get(0)))
+            float g      = str.tonumber(str.trim(parts.get(1)))
+            bool inRange = dir == 1 ? strike > px and strike <= px * (1 + rngPct / 100) : strike < px and strike >= px * (1 - rngPct / 100)
+            if not na(strike) and not na(g) and g * sgn > 0 and inRange
+                if na(bestG) or g * sgn > bestG * sgn
+                    bestK := strike
+                    bestG := g
+    [bestK, bestG]
+
+var line  gmLineUp = na
+var label gmTxtUp  = na
+var line  gmLineDn = na
+var label gmTxtDn  = na
+var line  gmLineNb = na
+var label gmTxtNb  = na
+var line  gmLineNa = na
+var label gmTxtNa  = na
+float gmNegBelow = na
+float gmNegAbove = na
+float gmUp = na
+float gmDn = na
+if barstate.islast
+    gmLineUp.delete(), gmTxtUp.delete(), gmLineDn.delete(), gmTxtDn.delete()
+    gmLineNb.delete(), gmTxtNb.delete(), gmLineNa.delete(), gmTxtNa.delete()
+    // is any liquidity still left above / below the price?
+    bool anyAbove = false
+    bool anyBelow = false
+    for k in keys
+        if not na(k.price) and not k.taken
+            anyAbove := anyAbove or k.price > close
+            anyBelow := anyBelow or k.price < close
+    for l in levels
+        if not isWeak(l)
+            anyAbove := anyAbove or l.price > close
+            anyBelow := anyBelow or l.price < close
+    int gmX = time + zoneLblOff * ms
+    if gmMode == "Always" or not anyAbove
+        [kU, gU] = gmBest(gmList, 1, close, gmRange)
+        if not na(kU)
+            gmUp := kU
+            gmLineUp := line.new(bar_index - 1, kU, bar_index, kU, extend = extend.both, color = gmColUp, width = gmWidth, style = line.style_solid)
+            gmTxtUp  := label.new(gmX, kU, "GEX · LARGEST POSITIVE GAMMA  " + str.tostring(kU, format.mintick) + "  (+" + str.tostring(gU, format.volume) + ")", xloc = xloc.bar_time, style = label.style_label_down, color = color.new(color.black, 100), textcolor = gmTxtCol, size = lblSz, text_formatting = text.format_bold)
+    if gmBelow and (gmMode == "Always" or not anyBelow)
+        [kD, gD] = gmBest(gmList, -1, close, gmRange)
+        if not na(kD)
+            gmDn := kD
+            gmLineDn := line.new(bar_index - 1, kD, bar_index, kD, extend = extend.both, color = gmColDn, width = gmWidth, style = line.style_solid)
+            gmTxtDn  := label.new(gmX, kD, "GEX · LARGEST POSITIVE GAMMA  " + str.tostring(kD, format.mintick) + "  (+" + str.tostring(gD, format.volume) + ")", xloc = xloc.bar_time, style = label.style_label_down, color = color.new(color.black, 100), textcolor = gmTxtCol, size = lblSz, text_formatting = text.format_bold)
+
+    if gmNeg
+        [nB, ngB] = gmBest(gmList, -1, close, gmRange, -1)
+        if not na(nB)
+            gmNegBelow := nB
+            gmLineNb := line.new(bar_index - 1, nB, bar_index, nB, extend = extend.both, color = gmColNeg, width = gmWidth, style = line.style_solid)
+            gmTxtNb  := label.new(gmX, nB, "GEX · LARGEST NEGATIVE GAMMA  " + str.tostring(nB, format.mintick) + "  (" + str.tostring(ngB, format.volume) + ")  · drops can speed up", xloc = xloc.bar_time, style = label.style_label_down, color = color.new(color.black, 100), textcolor = gmTxtCol, size = lblSz, text_formatting = text.format_bold)
+        [nA, ngA] = gmBest(gmList, 1, close, gmRange, -1)
+        if not na(nA)
+            gmNegAbove := nA
+            gmLineNa := line.new(bar_index - 1, nA, bar_index, nA, extend = extend.both, color = gmColNeg, width = gmWidth, style = line.style_solid)
+            gmTxtNa  := label.new(gmX, nA, "GEX · LARGEST NEGATIVE GAMMA  " + str.tostring(nA, format.mintick) + "  (" + str.tostring(ngA, format.volume) + ")  · breakouts can squeeze", xloc = xloc.bar_time, style = label.style_label_down, color = color.new(color.black, 100), textcolor = gmTxtCol, size = lblSz, text_formatting = text.format_bold)
+
+plot(gmUp, "Largest +gamma above", display = display.data_window)
+plot(gmDn, "Largest +gamma below", display = display.data_window)
+alertcondition(not na(gmUp) and high >= gmUp * 0.995, "Near the largest +gamma above", "{{ticker}} is near the largest positive gamma strike above ({{close}})")
+alertcondition(not na(gmDn) and low <= gmDn * 1.005, "Near the largest +gamma below", "{{ticker}} is near the largest positive gamma strike below ({{close}})")
+plot(gmNegBelow, "Largest -gamma below", display = display.data_window)
+plot(gmNegAbove, "Largest -gamma above", display = display.data_window)
+alertcondition(not na(gmNegBelow) and low <= gmNegBelow * 1.005, "Near the largest -gamma below", "{{ticker}} is at the largest negative gamma strike below: drops can speed up ({{close}})")
+alertcondition(not na(gmNegAbove) and high >= gmNegAbove * 0.995, "Near the largest -gamma above", "{{ticker}} is at the largest negative gamma strike above: a breakout can squeeze ({{close}})")
+
+// ─── BUY NOW / SELL NOW at the gamma lines ──────────────────────
+// levels as they stood at the previous close, so a crossing is measured against the right line
+[sPosUp, sPosUpG] = gmBest(gmList, 1, close[1], gmRange)
+[sPosDn, sPosDnG] = gmBest(gmList, -1, close[1], gmRange)
+[sNegDn, sNegDnG] = gmBest(gmList, -1, close[1], gmRange, -1)
+[sNegUp, sNegUpG] = gmBest(gmList, 1, close[1], gmRange, -1)
+bool gmToday = timeframe.isintraday and year(time) == year(last_bar_time) and month(time) == month(last_bar_time) and dayofmonth(time) == dayofmonth(last_bar_time)
+var float gmFiredBuy = na
+var float gmFiredSell = na
+var array<label> gmSigLbls = array.new<label>()
+if ta.change(time("D")) != 0
+    gmFiredBuy := na
+    gmFiredSell := na
+float tch = gmTouch / 100
+bool bFloor = not na(sPosDn) and low <= sPosDn * (1 + tch) and close > sPosDn and close > open
+bool bSqz   = not na(sNegUp) and close > sNegUp and close[1] <= sNegUp
+bool sCeil  = not na(sPosUp) and high >= sPosUp * (1 - tch) and close < sPosUp and close < open
+bool sTrap  = not na(sNegDn) and close < sNegDn and close[1] >= sNegDn
+float bLvl = bFloor ? sPosDn : bSqz ? sNegUp : na
+float sLvl = sCeil ? sPosUp : sTrap ? sNegDn : na
+bool gmBuyNow  = gmSig and gmToday and barstate.isconfirmed and not na(bLvl) and bLvl != nz(gmFiredBuy)
+bool gmSellNow = gmSig and gmToday and barstate.isconfirmed and not na(sLvl) and sLvl != nz(gmFiredSell)
+// next gamma line beyond the price, as the target
+nextAbove(float px) =>
+    float t1 = not na(sPosUp) and sPosUp > px ? sPosUp : na
+    float t2 = not na(sNegUp) and sNegUp > px ? sNegUp : na
+    na(t1) ? t2 : na(t2) ? t1 : math.min(t1, t2)
+nextBelow(float px) =>
+    float t1 = not na(sPosDn) and sPosDn < px ? sPosDn : na
+    float t2 = not na(sNegDn) and sNegDn < px ? sNegDn : na
+    na(t1) ? t2 : na(t2) ? t1 : math.max(t1, t2)
+if gmBuyNow
+    gmFiredBuy := bLvl
+    float st = bLvl * (1 - gmStopP / 100)
+    float tg = nextAbove(close)
+    string why = bFloor ? "floor held at +gamma " : "squeeze through -gamma "
+    gmSigLbls.push(label.new(bar_index, low, "GEX BUY NOW " + str.tostring(close, format.mintick) + "\n" + why + str.tostring(bLvl, format.mintick) + "\nstop " + str.tostring(st, format.mintick) + (na(tg) ? "" : " · target " + str.tostring(tg, format.mintick)), style = label.style_label_up, color = #089981, textcolor = color.white, size = size.small, text_formatting = text.format_bold))
+if gmSellNow
+    gmFiredSell := sLvl
+    float st = sLvl * (1 + gmStopP / 100)
+    float tg = nextBelow(close)
+    string why = sCeil ? "ceiling at +gamma " : "trap door through -gamma "
+    gmSigLbls.push(label.new(bar_index, high, "GEX SELL NOW " + str.tostring(close, format.mintick) + "\n" + why + str.tostring(sLvl, format.mintick) + "\nstop " + str.tostring(st, format.mintick) + (na(tg) ? "" : " · target " + str.tostring(tg, format.mintick)), style = label.style_label_down, color = #f23645, textcolor = color.white, size = size.small, text_formatting = text.format_bold))
+if gmSigLbls.size() > 30
+    gmSigLbls.shift().delete()
+plot(gmBuyNow ? 1 : 0, "GEX BUY NOW", display = display.data_window)
+plot(gmSellNow ? 1 : 0, "GEX SELL NOW", display = display.data_window)
+alertcondition(gmBuyNow, "GEX BUY NOW", "{{ticker}} GEX BUY NOW at a gamma line ({{close}}): floor held or squeeze")
+alertcondition(gmSellNow, "GEX SELL NOW", "{{ticker}} GEX SELL NOW at a gamma line ({{close}}): ceiling or trap door")
