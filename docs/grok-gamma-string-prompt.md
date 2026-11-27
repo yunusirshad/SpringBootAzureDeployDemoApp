@@ -1,4 +1,4 @@
-# Grok prompt: "Gamma for TradingView" copy line
+# Grok prompt: "Gamma for TradingView" copy line (largest positive and negative gamma)
 
 Paste everything below the line into the Grok app builder.
 
@@ -31,7 +31,11 @@ Use the same chain the GEX levels use (all expiries in the next 45 days, up to 8
 
 ## On screen
 - Show the line in a monospace box under the option chain: `Gamma for TradingView: 7.5=-1240, 10=85410, 12.5=3120` with a **Copy** button that copies only the part after the colon.
-- Below it, small: "Largest positive gamma above the price: 10 (+85410) · below: — (none)". Use the same rule as the indicator: the largest positive value above the price and the largest positive value below the price, within 15%.
+- Below it, small, the same four levels the TradingView indicator draws (within 15% of the price):
+  - "Largest POSITIVE gamma above: 10 (+85410) · below: 9 (+400)": the largest positive value above and below the price. Positive gamma = dealers long gamma: price tends to slow down, stall or pin there (magnet / ceiling / floor).
+  - "Largest NEGATIVE gamma below: 9.2 (−900) · above: 10.5 (−300)": the most negative value below and above the price. Negative gamma = dealers short gamma: price tends to SPEED UP through it (trap door below, squeeze above).
+  - Show "—" when there is none on that side.
+- Make sure the copy line keeps BOTH positive and negative values (the indicator needs the negatives for the orange lines).
 - Add the same line to the API: `GET /api/v1/gamma/{ticker}` returns the line as plain text, and `/api/v1/gex` adds a field `gammaString` per stock.
 
 ## When it updates
@@ -40,3 +44,4 @@ Use the same chain the GEX levels use (all expiries in the next 45 days, up to 8
 ## Check it
 - A stock at 9.42 with call open interest 56 at 10, put open interest 1 at 7.50, and a 10 King: the line contains `10=` with a positive number that is the largest value in the line, and `7.5=` with a small negative number.
 - No `$` signs, no `K`/`M` suffixes, no text other than the pairs.
+- With the line `8.5=300, 9=400, 9.2=-900, 9.5=120, 10=850, 10.5=-300, 11=1200` and the price at 9.455, the summary reads: positive above 10 (+850), positive below 9 (+400), negative below 9.2 (−900), negative above 10.5 (−300). 11 is more than 15% away, so it is skipped.

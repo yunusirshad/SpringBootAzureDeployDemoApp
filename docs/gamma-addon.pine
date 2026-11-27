@@ -12,19 +12,25 @@
 //   SELL side · no level left BELOW the price: the largest positive gamma
 //               strike below = SOLID RED line.
 // Each line carries bold dark text on top: LARGEST POSITIVE GAMMA + price.
+// NEGATIVE gamma (optional, orange) = dealers are short gamma there: they sell into drops and buy into
+//   rallies, so price tends to SPEED UP through that strike (trap door below, squeeze above).
+//   The largest negative strike below and above the price are drawn as solid orange lines with
+//   LARGEST NEGATIVE GAMMA on top.
 // ════════════════════════════════════════════════════════════════
-grpGm    = "Largest positive gamma (from your options app)"
-gmList   = input.text_area("", "Gamma by strike (strike=gamma, comma separated)", group = grpGm, tooltip = "Paste from your GEX app, e.g.  9=400, 9.5=120, 10=850, 10.5=-300, 11=1200. Only positive values are used. Update it each morning (open interest changes daily).")
+grpGm    = "Largest positive / negative gamma (from your options app)"
+gmList   = input.text_area("", "Gamma by strike (strike=gamma, comma separated)", group = grpGm, tooltip = "Paste from your GEX app, e.g.  9=400, 9.5=120, 10=850, 10.5=-300, 11=1200. Positive values give the green / red lines, negative values the orange lines. Update it each morning (open interest changes daily).")
 gmMode   = input.string("Always", "Show", ["Always", "Only when no levels on that side"], group = grpGm)
 gmRange  = input.float(15.0, "Look within (% from price)", 0.5, 100.0, 0.5, group = grpGm)
 gmBelow  = input.bool(true, "Also the sell side (below the price)", group = grpGm)
 gmColUp  = input.color(#00e676, "Line above (buy side)", group = grpGm)
 gmColDn  = input.color(#ff1744, "Line below (sell side)", group = grpGm)
+gmNeg    = input.bool(true, "Also the largest NEGATIVE gamma (below and above)", group = grpGm)
+gmColNeg = input.color(#ff9800, "Line negative gamma", group = grpGm)
 gmTxtCol = input.color(color.black, "Text color", group = grpGm)
 gmWidth  = input.int(3, "Line width", 1, 6, group = grpGm)
 
 // the strike with the largest positive gamma above (dir 1) or below (dir -1) the price, within the range
-gmBest(string list, int dir, float px, float rngPct) =>
+gmBest(string list, int dir, float px, float rngPct, int sgn = 1) =>
     float bestK = na
     float bestG = na
     for item in str.split(list, ",")
@@ -33,8 +39,8 @@ gmBest(string list, int dir, float px, float rngPct) =>
             float strike = str.tonumber(str.trim(parts.get(0)))
             float g      = str.tonumber(str.trim(parts.get(1)))
             bool inRange = dir == 1 ? strike > px and strike <= px * (1 + rngPct / 100) : strike < px and strike >= px * (1 - rngPct / 100)
-            if not na(strike) and not na(g) and g > 0 and inRange
-                if na(bestG) or g > bestG
+            if not na(strike) and not na(g) and g * sgn > 0 and inRange
+                if na(bestG) or g * sgn > bestG * sgn
                     bestK := strike
                     bestG := g
     [bestK, bestG]
@@ -43,10 +49,17 @@ var line  gmLineUp = na
 var label gmTxtUp  = na
 var line  gmLineDn = na
 var label gmTxtDn  = na
+var line  gmLineNb = na
+var label gmTxtNb  = na
+var line  gmLineNa = na
+var label gmTxtNa  = na
+float gmNegBelow = na
+float gmNegAbove = na
 float gmUp = na
 float gmDn = na
 if barstate.islast
     gmLineUp.delete(), gmTxtUp.delete(), gmLineDn.delete(), gmTxtDn.delete()
+    gmLineNb.delete(), gmTxtNb.delete(), gmLineNa.delete(), gmTxtNa.delete()
     // is any liquidity still left above / below the price?
     bool anyAbove = false
     bool anyBelow = false
@@ -72,7 +85,23 @@ if barstate.islast
             gmLineDn := line.new(bar_index - 1, kD, bar_index, kD, extend = extend.both, color = gmColDn, width = gmWidth, style = line.style_solid)
             gmTxtDn  := label.new(gmX, kD, "LARGEST POSITIVE GAMMA  " + str.tostring(kD, format.mintick) + "  (+" + str.tostring(gD, format.volume) + ")", xloc = xloc.bar_time, style = label.style_label_down, color = color.new(color.black, 100), textcolor = gmTxtCol, size = lblSz, text_formatting = text.format_bold)
 
+    if gmNeg
+        [nB, ngB] = gmBest(gmList, -1, close, gmRange, -1)
+        if not na(nB)
+            gmNegBelow := nB
+            gmLineNb := line.new(bar_index - 1, nB, bar_index, nB, extend = extend.both, color = gmColNeg, width = gmWidth, style = line.style_solid)
+            gmTxtNb  := label.new(gmX, nB, "LARGEST NEGATIVE GAMMA  " + str.tostring(nB, format.mintick) + "  (" + str.tostring(ngB, format.volume) + ")  · drops can speed up", xloc = xloc.bar_time, style = label.style_label_down, color = color.new(color.black, 100), textcolor = gmTxtCol, size = lblSz, text_formatting = text.format_bold)
+        [nA, ngA] = gmBest(gmList, 1, close, gmRange, -1)
+        if not na(nA)
+            gmNegAbove := nA
+            gmLineNa := line.new(bar_index - 1, nA, bar_index, nA, extend = extend.both, color = gmColNeg, width = gmWidth, style = line.style_solid)
+            gmTxtNa  := label.new(gmX, nA, "LARGEST NEGATIVE GAMMA  " + str.tostring(nA, format.mintick) + "  (" + str.tostring(ngA, format.volume) + ")  · breakouts can squeeze", xloc = xloc.bar_time, style = label.style_label_down, color = color.new(color.black, 100), textcolor = gmTxtCol, size = lblSz, text_formatting = text.format_bold)
+
 plot(gmUp, "Largest +gamma above", display = display.data_window)
 plot(gmDn, "Largest +gamma below", display = display.data_window)
 alertcondition(not na(gmUp) and high >= gmUp * 0.995, "Near the largest +gamma above", "{{ticker}} is near the largest positive gamma strike above ({{close}})")
 alertcondition(not na(gmDn) and low <= gmDn * 1.005, "Near the largest +gamma below", "{{ticker}} is near the largest positive gamma strike below ({{close}})")
+plot(gmNegBelow, "Largest -gamma below", display = display.data_window)
+plot(gmNegAbove, "Largest -gamma above", display = display.data_window)
+alertcondition(not na(gmNegBelow) and low <= gmNegBelow * 1.005, "Near the largest -gamma below", "{{ticker}} is at the largest negative gamma strike below: drops can speed up ({{close}})")
+alertcondition(not na(gmNegAbove) and high >= gmNegAbove * 0.995, "Near the largest -gamma above", "{{ticker}} is at the largest negative gamma strike above: a breakout can squeeze ({{close}})")
