@@ -5,6 +5,8 @@ indicator("Fib + Golden Zone (follows price)", shorttitle = "Fib GZ", overlay = 
 //   Uptrend:   1 at the swing LOW, 0 at the HIGH. Every new high moves 0 up with it, live.
 //              After a real pullback (at least "Re-anchor" of the leg), a new high also moves 1 up to that
 //              pullback's low, so the fib always measures the latest leg.
+//              A BOS (a candle CLOSING above the previous high after a swing low has formed below it) redraws
+//              the fib from that swing low (new 1) to the new high (new 0).
 //              The leg ends on a CHoCH by default: a candle CLOSING below the last higher low (the swing low before
 //              the current high). The fib then flips to a downtrend leg from that high. (Or: a close beyond 0.786 / 1.0.)
 //   Downtrend: the mirror image (1 at the swing HIGH, 0 at the LOW).
@@ -23,7 +25,8 @@ lookback   = input.int(50, "Seed window (bars) for the first swing", minval = 5)
 reanchor   = input.float(0.382, "Re-anchor 1 after a pullback of at least (of the leg)", minval = 0.1, maxval = 1.0, step = 0.001)
 flipMode   = input.string("CHoCH", "Start a new leg on", options = ["CHoCH", "Close beyond 0.786", "Close beyond 1.0"], tooltip = "CHoCH: a candle CLOSES beyond the last swing that made the current extreme (above the last lower high in a downtrend, below the last higher low in an uptrend); without such a swing, a close beyond 1.0. 0.786: the leg ends as soon as it is dead. 1.0: only on a full retrace.")
 pivotLen   = input.int(3, "CHoCH swing strength (bars each side)", minval = 1, maxval = 10)
-showChoch  = input.bool(true, "Mark CHoCH on the chart")
+showChoch  = input.bool(true, "Mark CHoCH and BOS on the chart")
+bosOn      = input.bool(true, "Redraw the fib on a BOS", tooltip = "Uptrend: a candle CLOSES above the previous high after a swing low formed below it: 1 moves to that swing low, 0 to the new high. Downtrend: the mirror image.")
 liveOnly   = input.bool(true, "Update live with the forming candle (off = closed candles only, no repaint)")
 
 lvB        = input.float(0.5, "Golden zone start", step = 0.001, group = "Levels")
@@ -73,7 +76,11 @@ swing() =>
     var array<int>   phT = array.new<int>()
     var array<float> plP = array.new<float>()
     var array<int>   plT = array.new<int>()
+    var float pendLvl = na    // BOS level waiting for a close beyond it (the previous high / low)
+    var float pendPt = na     // the swing low / high the fib redraws from when it breaks
+    var int   pendPtT = na
     bool choch = false
+    int bos = 0
     // confirmed swing highs / lows (pivotLen bars each side), kept for the CHoCH check
     ph = ta.pivothigh(high, pivotLen, pivotLen)
     pl = ta.pivotlow(low, pivotLen, pivotLen)
@@ -100,11 +107,19 @@ swing() =>
                 dir := -1, a := hi, aT := hiT, x := lo, xT := loT, pb := high, pbT := time
     else if dir == 1
         if high > x
-            if pb > a and (x - pb) >= reanchor * (x - a)
+            // a swing low formed since the previous high: breaking that high on a CLOSE is a BOS
+            bool swingLowSince = plT.size() > 0 and plT.last() > xT
+            if bosOn and swingLowSince and pb > a
+                pendLvl := x, pendPt := pb, pendPtT := pbT
+            else if pb > a and (x - pb) >= reanchor * (x - a)
                 a := pb, aT := pbT
             x := high, xT := time, pb := low, pbT := time
         else if low < pb
             pb := low, pbT := time
+        // BOS up: a close above the previous high redraws the fib from that swing low to the new high
+        if bosOn and not na(pendLvl) and close > pendLvl
+            a := pendPt, aT := pendPtT, bos := 1
+            pendLvl := na
         // the last higher low: the latest swing low from the anchor up to the current high (the anchor itself counts)
         float hl = na
         if plP.size() > 0
@@ -118,13 +133,21 @@ swing() =>
         if close < thr
             choch := flipMode == "CHoCH" and not na(hl)
             dir := -1, a := x, aT := xT, x := low, xT := time, pb := high, pbT := time
+            pendLvl := na
     else
         if low < x
-            if pb < a and (pb - x) >= reanchor * (a - x)
+            bool swingHighSince = phT.size() > 0 and phT.last() > xT
+            if bosOn and swingHighSince and pb < a
+                pendLvl := x, pendPt := pb, pendPtT := pbT
+            else if pb < a and (pb - x) >= reanchor * (a - x)
                 a := pb, aT := pbT
             x := low, xT := time, pb := high, pbT := time
         else if high > pb
             pb := high, pbT := time
+        // BOS down: a close below the previous low redraws the fib from that swing high to the new low
+        if bosOn and not na(pendLvl) and close < pendLvl
+            a := pendPt, aT := pendPtT, bos := -1
+            pendLvl := na
         // the last lower high: the latest swing high from the anchor down to the current low (the anchor itself counts)
         float lh = na
         if phP.size() > 0
@@ -138,14 +161,15 @@ swing() =>
         if close > thr
             choch := flipMode == "CHoCH" and not na(lh)
             dir := 1, a := x, aT := xT, x := high, xT := time, pb := low, pbT := time
-    [a, aT, x, xT, dir, choch]
+            pendLvl := na
+    [a, aT, x, xT, dir, choch, bos]
 
 swingPrev() =>
-    [a, aT, x, xT, d, c] = swing()
-    [a[1], aT[1], x[1], xT[1], d[1], c[1]]
+    [a, aT, x, xT, d, c, b] = swing()
+    [a[1], aT[1], x[1], xT[1], d[1], c[1], b[1]]
 
-[aL, aTL, xL, xTL, dL, cL] = request.security(syminfo.tickerid, tf, swing(), lookahead = barmerge.lookahead_off)
-[aC, aTC, xC, xTC, dC, cC] = request.security(syminfo.tickerid, tf, swingPrev(), lookahead = barmerge.lookahead_on)
+[aL, aTL, xL, xTL, dL, cL, bL] = request.security(syminfo.tickerid, tf, swing(), lookahead = barmerge.lookahead_off)
+[aC, aTC, xC, xTC, dC, cC, bC] = request.security(syminfo.tickerid, tf, swingPrev(), lookahead = barmerge.lookahead_on)
 
 anc  = liveOnly ? aL  : aC
 ancT = liveOnly ? aTL : aTC
@@ -153,6 +177,8 @@ ext  = liveOnly ? xL  : xC
 extT = liveOnly ? xTL : xTC
 dirN = liveOnly ? dL  : dC
 chochNow = (liveOnly ? cL : cC) and dirN != dirN[1]
+bosN     = liveOnly ? bL : bC
+bosNow   = bosN != 0 and ancT != ancT[1]
 upTrend = dirN == 1
 valid   = not na(anc) and not na(ext) and anc != ext
 
@@ -229,8 +255,10 @@ if sDir != 0 and not na(sT) and time > sT and (sState == "OPEN" or sState == "T1
 plotshape(buySig, "BUY", shape.labelup, location.belowbar, color.new(#089981, 0), text = "BUY", textcolor = color.white, size = size.small)
 plotshape(sellSig, "SELL", shape.labeldown, location.abovebar, color.new(#f23645, 0), text = "SELL", textcolor = color.white, size = size.small)
 plotshape(deadNow, "DEAD close", shape.xcross, location.belowbar, colDead, size = size.tiny)
-plotshape(showChoch and chochNow and dirN == 1, "CHoCH up", shape.labelup, location.belowbar, color.new(#2962ff, 0), text = "CHoCH ↑", textcolor = color.white, size = size.tiny)
-plotshape(showChoch and chochNow and dirN == -1, "CHoCH down", shape.labeldown, location.abovebar, color.new(#9c27b0, 0), text = "CHoCH ↓", textcolor = color.white, size = size.tiny)
+plotshape(showChoch and chochNow and dirN == 1, "CHoCH up", shape.labelup, location.belowbar, color.new(#089981, 0), text = "CHoCH ↑", textcolor = color.white, size = size.tiny)
+plotshape(showChoch and chochNow and dirN == -1, "CHoCH down", shape.labeldown, location.abovebar, color.new(#f23645, 0), text = "CHoCH ↓", textcolor = color.white, size = size.tiny)
+plotshape(showChoch and bosNow and bosN == 1, "BOS up", shape.labelup, location.belowbar, color.new(#089981, 30), text = "BOS ↑", textcolor = color.white, size = size.tiny)
+plotshape(showChoch and bosNow and bosN == -1, "BOS down", shape.labeldown, location.abovebar, color.new(#f23645, 30), text = "BOS ↓", textcolor = color.white, size = size.tiny)
 
 // ───── Drawing (rebuilt on the last bar) ─────
 var array<line>  lns = array.new<line>()
@@ -317,3 +345,5 @@ alertcondition(buySig, "Fib BUY (golden zone confirmed)", "{{ticker}} fib BUY: g
 alertcondition(sellSig, "Fib SELL (golden zone confirmed)", "{{ticker}} fib SELL: golden zone bounce confirmed")
 alertcondition(chochNow and dirN == 1, "CHoCH up: fib flipped to an uptrend", "{{ticker}} CHoCH up: fib flipped to an uptrend")
 alertcondition(chochNow and dirN == -1, "CHoCH down: fib flipped to a downtrend", "{{ticker}} CHoCH down: fib flipped to a downtrend")
+alertcondition(bosNow and bosN == 1, "BOS up: fib redrawn on the new leg", "{{ticker}} BOS up: fib redrawn from the swing low to the new high")
+alertcondition(bosNow and bosN == -1, "BOS down: fib redrawn on the new leg", "{{ticker}} BOS down: fib redrawn from the swing high to the new low")
