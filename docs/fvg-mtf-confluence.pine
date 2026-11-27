@@ -9,7 +9,8 @@ indicator("MTF FVG Confluence + EQH/EQL", shorttitle = "FVG MTF", overlay = true
 //   Combined  where gaps from different timeframes overlap, they merge into one zone: the band is where 2+
 //             overlap, the darker core is where the most overlap. Strength = how many timeframes overlap (x1..x4).
 //             Only the strongest N zones per side are drawn (more timeframes, then higher timeframe, then less
-//             absorbed, then nearest).
+//             absorbed, then nearest). If a side has no such zone, the best single-timeframe gap is drawn faintly
+//             and labelled x1 (context only).
 //   EQH/EQL   equal highs / lows: 2+ unswept swing highs (lows) within "Equal within" x ATR of each other, on each
 //             timeframe, merged across timeframes. Strong = at least "Min touches" or found on 2+ timeframes.
 //             A level is dropped once price trades through it (its liquidity is taken).
@@ -27,6 +28,7 @@ maxAge   = input.int(100, "Max age (candles of its own timeframe), then decayed"
 maxAbs   = input.float(80, "Max absorbed (%), then decayed", minval = 1, maxval = 100, group = grpF)
 minScore = input.int(2, "Min timeframes overlapping (strength)", minval = 1, maxval = 4, group = grpF)
 showN    = input.int(2, "Show the strongest N per side", minval = 1, maxval = 5, group = grpF)
+showFb   = input.bool(true, "No zone on a side? Show the best single-timeframe FVG (x1, faint)", group = grpF, tooltip = "When no zone of 2+ timeframes exists on a side, the best single gap is drawn faintly and labelled x1: highest timeframe first, then least absorbed, then nearest. Context only, weaker than x2+.")
 
 grpE = "EQH / EQL"
 showEq   = input.bool(true, "Show EQH / EQL", group = grpE)
@@ -36,7 +38,7 @@ minTouch = input.int(3, "Min touches (or found on 2+ timeframes)", minval = 2, m
 showEqN  = input.int(2, "Show the strongest N per side", minval = 1, maxval = 5, group = grpE)
 
 grpS = "Style"
-colBull = input.color(color.new(#089981, 0), "Bullish FVG", group = grpS)
+colBull = input.color(color.new(#00bcd4, 0), "Bullish FVG", group = grpS)
 colBear = input.color(color.new(#f23645, 0), "Bearish FVG", group = grpS)
 colEqh  = input.color(color.new(#ff9800, 0), "EQH", group = grpS)
 colEql  = input.color(color.new(#2962ff, 0), "EQL", group = grpS)
@@ -259,6 +261,33 @@ drawSide(array<float> gT, array<float> gB, array<int> gF, array<int> gM, array<f
                     best := z
         if best >= 0
             chosen.push(best)
+    // fallback: no zone of minScore+ timeframes on this side -> the best single gap, faint, labelled x1
+    float fbLo = na
+    float fbHi = na
+    if chosen.size() == 0 and showFb and gT.size() > 0
+        int fb = -1
+        float fbAbs = na
+        for j = 0 to gT.size() - 1
+            float g = gT.get(j) - gB.get(j)
+            float aj = g > 0 ? (bull ? gT.get(j) - gX.get(j) : gX.get(j) - gB.get(j)) / g * 100 : 100
+            aj := math.max(0, math.min(100, aj))
+            if aj <= maxAbs
+                float d = math.abs(close - (gT.get(j) + gB.get(j)) / 2)
+                bool better = fb < 0
+                if not better
+                    float dB = math.abs(close - (gT.get(fb) + gB.get(fb)) / 2)
+                    better := gF.get(j) > gF.get(fb) or (gF.get(j) == gF.get(fb) and (aj < fbAbs or (aj == fbAbs and d < dB)))
+                if better
+                    fb := j
+                    fbAbs := aj
+        if fb >= 0
+            fbLo := gB.get(fb)
+            fbHi := gT.get(fb)
+            bxs.push(box.new(gM.get(fb), fbHi, time, fbLo, xloc = xloc.bar_time, extend = extendR ? extend.right : extend.none,
+                 bgcolor = color.new(col, 90), border_color = color.new(col, 40), border_style = line.style_dotted))
+            string fbTxt = (bull ? "BULL FVG ×1  " : "BEAR FVG ×1  ") + names.get(gF.get(fb)) + "  (no confluence)\n" + f(fbLo) + " – " + f(fbHi) + "  ·  absorbed " + str.tostring(fbAbs, "#") + "%"
+            lbs.push(label.new(time, (fbLo + fbHi) / 2, fbTxt, xloc = xloc.bar_time, style = label.style_label_left,
+                 color = lblBg, textcolor = color.new(col, 30), size = size.small, text_formatting = text.format_bold))
     for c in chosen
         int left = na(zOld.get(c)) ? time : zOld.get(c)
         bxs.push(box.new(left, zHi.get(c), time, zLo.get(c), xloc = xloc.bar_time, extend = extendR ? extend.right : extend.none,
@@ -268,7 +297,7 @@ drawSide(array<float> gT, array<float> gB, array<int> gF, array<int> gM, array<f
         string txt = (bull ? "BULL FVG ×" : "BEAR FVG ×") + str.tostring(zSc.get(c)) + "  " + zWho.get(c) + "\n" + f(zLo.get(c)) + " – " + f(zHi.get(c)) + "  ·  absorbed " + str.tostring(zAbs.get(c), "#") + "%"
         lbs.push(label.new(time, (zLo.get(c) + zHi.get(c)) / 2, txt, xloc = xloc.bar_time, style = label.style_label_left,
              color = lblBg, textcolor = col, size = size.normal, text_formatting = text.format_bold))
-    chosen.size() > 0 ? zAbs.get(chosen.get(0)) : na
+    [chosen.size() > 0 ? zAbs.get(chosen.get(0)) : na, fbLo, fbHi]
 
 // merge equal highs / lows across timeframes and draw the strongest
 drawEq(array<float> P, array<int> N, array<int> F, array<int> M, bool isHigh, color col) =>
@@ -328,6 +357,10 @@ drawEq(array<float> P, array<int> N, array<int> F, array<int> M, bool isHigh, co
 
 float topBullAbs = na
 float topBearAbs = na
+float bullFbLo = na
+float bullFbHi = na
+float bearFbLo = na
+float bearFbHi = na
 int eqhCount = na
 int eqlCount = na
 if barstate.islast
@@ -349,8 +382,10 @@ if barstate.islast
     addAll(gsT, gsB, gsF, gsM, gsX, s2T, s2B, s2M, s2X, 1)
     addAll(gsT, gsB, gsF, gsM, gsX, s3T, s3B, s3M, s3X, 2)
     addAll(gsT, gsB, gsF, gsM, gsX, s4T, s4B, s4M, s4X, 3)
-    topBullAbs := drawSide(gbT, gbB, gbF, gbM, gbX, true, colBull)
-    topBearAbs := drawSide(gsT, gsB, gsF, gsM, gsX, false, colBear)
+    [aB, lB, hB] = drawSide(gbT, gbB, gbF, gbM, gbX, true, colBull)
+    [aS, lS, hS] = drawSide(gsT, gsB, gsF, gsM, gsX, false, colBear)
+    topBullAbs := aB, bullFbLo := lB, bullFbHi := hB
+    topBearAbs := aS, bearFbLo := lS, bearFbHi := hS
 
     if showEq
         hP = array.new<float>(), hN = array.new<int>(), hF = array.new<int>(), hM = array.new<int>()
@@ -374,6 +409,10 @@ if barstate.islast
 // data window (last bar)
 plot(topBullAbs, "Strongest bull FVG absorbed %", display = display.data_window)
 plot(topBearAbs, "Strongest bear FVG absorbed %", display = display.data_window)
+plot(bullFbLo, "Bull x1 fallback low", display = display.data_window)
+plot(bullFbHi, "Bull x1 fallback high", display = display.data_window)
+plot(bearFbLo, "Bear x1 fallback low", display = display.data_window)
+plot(bearFbHi, "Bear x1 fallback high", display = display.data_window)
 plot(eqhCount, "Strong EQH levels", display = display.data_window)
 plot(eqlCount, "Strong EQL levels", display = display.data_window)
 sz(array<float> a) => na(a) ? 0 : a.size()
