@@ -1,0 +1,344 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © fluxchart — original "Volumized Order Blocks | Flux Charts" (OB detection logic)
+// Modified: Pine v6, removal of 100%-absorbed / decayed zones, inputs hidden from the status line, multi-timeframe sourcing, cross-timeframe merging of
+// overlapping zones, and absorption tracking (how much of each zone has been
+// eaten into vs. how much is left).
+
+//@version=6
+indicator("OB + Absorption", "OB Abs", overlay = true, max_boxes_count = 500, max_labels_count = 200, max_lines_count = 200)
+
+// ════════════════════════════════════════════════════════════════
+// How it reads:
+//  • Each zone is drawn in two parts:
+//      coloured  = LEFT (untouched part of the order block)
+//      grey      = ABSORBED (part price has already traded into)
+//  • Absorbed % = deepest penetration into the zone since it formed.
+//  • "Vol in zone" = volume traded inside the zone after it formed,
+//    shown as a multiple of the volume that created the OB.
+//  • Overlapping same-side zones from different timeframes merge into
+//    one zone, labelled e.g. "15m & 1H & 4H".
+//  • Timeframes are fixed, so the same zones show on any chart TF.
+//    A timeframe lower than the chart is skipped.
+//  • Zones are removed once 100% absorbed (price reached the far edge)
+//    or decayed (older than the max age, in bars of their own timeframe).
+// ════════════════════════════════════════════════════════════════
+
+// ─── Inputs ─────────────────────────────────────────────────────
+grpT = "Timeframes"
+use1 = input.bool(false, "TF 1", inline = "t1", group = grpT, display = display.none)
+tf1  = input.timeframe("5", "", inline = "t1", group = grpT, display = display.none)
+use2 = input.bool(true, "TF 2", inline = "t2", group = grpT, display = display.none)
+tf2  = input.timeframe("15", "", inline = "t2", group = grpT, display = display.none)
+use3 = input.bool(true, "TF 3", inline = "t3", group = grpT, display = display.none)
+tf3  = input.timeframe("60", "", inline = "t3", group = grpT, display = display.none)
+use4 = input.bool(true, "TF 4", inline = "t4", group = grpT, display = display.none)
+tf4  = input.timeframe("240", "", inline = "t4", group = grpT, display = display.none)
+use5 = input.bool(true, "TF 5", inline = "t5", group = grpT, display = display.none)
+tf5  = input.timeframe("D", "", inline = "t5", group = grpT, display = display.none)
+
+grpG      = "Order blocks"
+swingLen  = input.int(10, "Swing length", 3, 50, group = grpG, display = display.none)
+endMethod = input.string("Close", "Invalidation", ["Wick", "Close"], group = grpG, tooltip = "Close: a zone only dies when a candle CLOSES through it, so wicks into it show as absorption. Wick: any wick through kills it (zones rarely show partial absorption).", display = display.none)
+keepPerTf = input.int(3, "Zones per timeframe (each side)", 1, 6, group = grpG, display = display.none)
+mergeOn   = input.bool(true, "Merge overlapping zones across timeframes", group = grpG, display = display.none)
+showHist  = input.bool(false, "Show broken zones", group = grpG, display = display.none)
+rmAbsPct  = input.float(100.0, "Remove zone when absorbed ≥ (%)", 1.0, 100.0, 1.0, group = grpG, tooltip = "100 = remove the zone as soon as price has traded through all of it (wick to the far edge), even if no candle closed through.", display = display.none)
+maxAge    = input.int(200, "Decay: remove zones older than (bars of their own timeframe)", 10, 5000, group = grpG, tooltip = "Counted in bars of the zone's own timeframe. 200 bars ≈ 15m: 1-2 weeks, 1H: 1-4 weeks, 4H: 1-4 months, Daily: 9 months. For almost no decay set 5000.", display = display.none)
+
+grpS        = "Style"
+bullCol     = input.color(color.new(#089981, 65), "Bullish (left)", group = grpS, display = display.none)
+bearCol     = input.color(color.new(#f23645, 65), "Bearish (left)", group = grpS, display = display.none)
+absorbedCol = input.color(color.new(#b2b5be, 45), "Absorbed part", group = grpS, display = display.none)
+edgeCol     = input.color(color.new(color.white, 0), "Absorption edge line", group = grpS, display = display.none)
+brokenCol   = input.color(color.new(#787b86, 90), "Broken zone", group = grpS, display = display.none)
+textCol     = input.color(color.new(color.white, 20), "Text", group = grpS, display = display.none)
+showVolIn   = input.bool(true, "Show volume traded in zone", group = grpS, display = display.none)
+extendBars  = input.int(15, "Extend zones right (bars)", 1, 100, group = grpS, display = display.none)
+
+chartSec = timeframe.in_seconds()
+extendMs = extendBars * chartSec * 1000
+
+// ─── Types ──────────────────────────────────────────────────────
+type OB
+    float top
+    float bottom
+    int   startTime
+    float obVol
+    float deepest          // furthest price reached into the zone after formation (na = untouched)
+    float volIn            // volume traded inside the zone after formation
+    bool  breaker = false
+    int   breakTime = na
+    int   bornBar = na
+
+type Zone
+    float  top
+    float  bottom
+    int    startTime
+    int    side            // 1 = bullish, -1 = bearish
+    float  obVol
+    float  deepest
+    float  volIn
+    string tfs
+    bool   breaker = false
+    int    breakTime = na
+
+// ─── OB engine (runs inside each requested timeframe) ───────────
+obEngine(int len, string endM, float rmAbs, int ageMax) =>
+    var array<OB> bulls = array.new<OB>()
+    var array<OB> bears = array.new<OB>()
+    var int   swingType  = 0
+    var float topY       = na
+    var int   topX       = na
+    var bool  topCrossed = true
+    var float btmY       = na
+    var int   btmX       = na
+    var bool  btmCrossed = true
+
+    float atrV  = ta.atr(10)
+    float upper = ta.highest(len)
+    float lower = ta.lowest(len)
+    int prevType = swingType
+    swingType := high[len] > upper ? 0 : low[len] < lower ? 1 : swingType
+    if swingType == 0 and prevType != 0
+        topY       := high[len]
+        topX       := bar_index - len
+        topCrossed := false
+    if swingType == 1 and prevType != 1
+        btmY       := low[len]
+        btmX       := bar_index - len
+        btmCrossed := false
+
+    float vol = nz(volume)
+
+    // Update existing bullish OBs: absorption + invalidation
+    if bulls.size() > 0
+        for i = bulls.size() - 1 to 0
+            OB ob = bulls.get(i)
+            if not ob.breaker
+                if low <= ob.top
+                    ob.deepest := na(ob.deepest) ? low : math.min(ob.deepest, low)
+                    if high >= ob.bottom
+                        ob.volIn += vol
+                if (endM == "Wick" ? low : math.min(open, close)) < ob.bottom
+                    ob.breaker   := true
+                    ob.breakTime := time
+                else if bar_index - ob.bornBar > ageMax or (not na(ob.deepest) and (ob.top - ob.deepest) >= rmAbs * (ob.top - ob.bottom))
+                    bulls.remove(i)        // fully absorbed or decayed
+            else if high > ob.top or bar_index - ob.bornBar > ageMax
+                bulls.remove(i)
+
+    // Update existing bearish OBs
+    if bears.size() > 0
+        for i = bears.size() - 1 to 0
+            OB ob = bears.get(i)
+            if not ob.breaker
+                if high >= ob.bottom
+                    ob.deepest := na(ob.deepest) ? high : math.max(ob.deepest, high)
+                    if low <= ob.top
+                        ob.volIn += vol
+                if (endM == "Wick" ? high : math.max(open, close)) > ob.top
+                    ob.breaker   := true
+                    ob.breakTime := time
+                else if bar_index - ob.bornBar > ageMax or (not na(ob.deepest) and (ob.deepest - ob.bottom) >= rmAbs * (ob.top - ob.bottom))
+                    bears.remove(i)        // fully absorbed or decayed
+            else if low < ob.bottom or bar_index - ob.bornBar > ageMax
+                bears.remove(i)
+
+    // New bullish OB: close breaks the last swing high → lowest candle before the break
+    if not topCrossed and not na(topY) and close > topY
+        topCrossed := true
+        int span = math.min(bar_index - topX, 300)
+        if span >= 2
+            float bBtm = low[1]
+            float bTop = high[1]
+            int   bLoc = time[1]
+            if span > 2
+                for i = 2 to span - 1
+                    if low[i] <= bBtm
+                        bBtm := low[i]
+                        bTop := high[i]
+                        bLoc := time[i]
+            float obVol = vol + nz(volume[1]) + nz(volume[2])
+            if math.abs(bTop - bBtm) <= atrV * 3.5
+                bulls.unshift(OB.new(bTop, bBtm, bLoc, obVol, na, 0.0, false, na, bar_index))
+                if bulls.size() > 12
+                    bulls.pop()
+
+    // New bearish OB: close breaks the last swing low → highest candle before the break
+    if not btmCrossed and not na(btmY) and close < btmY
+        btmCrossed := true
+        int span = math.min(bar_index - btmX, 300)
+        if span >= 2
+            float bTop = high[1]
+            float bBtm = low[1]
+            int   bLoc = time[1]
+            if span > 2
+                for i = 2 to span - 1
+                    if high[i] >= bTop
+                        bTop := high[i]
+                        bBtm := low[i]
+                        bLoc := time[i]
+            float obVol = vol + nz(volume[1]) + nz(volume[2])
+            if math.abs(bTop - bBtm) <= atrV * 3.5
+                bears.unshift(OB.new(bTop, bBtm, bLoc, obVol, na, 0.0, false, na, bar_index))
+                if bears.size() > 12
+                    bears.pop()
+
+    // Only hand the lists out on the last bar of the requested timeframe.
+    // request.security stores its result for EVERY bar, so returning the
+    // arrays on all bars is what blew the memory limit.
+    array<OB> outBulls = barstate.islast ? bulls : na
+    array<OB> outBears = barstate.islast ? bears : na
+    [outBulls, outBears]
+
+// ─── Requests (fixed timeframes) ────────────────────────────────
+[b1, s1] = request.security(syminfo.tickerid, tf1, obEngine(swingLen, endMethod, rmAbsPct / 100, maxAge))
+[b2, s2] = request.security(syminfo.tickerid, tf2, obEngine(swingLen, endMethod, rmAbsPct / 100, maxAge))
+[b3, s3] = request.security(syminfo.tickerid, tf3, obEngine(swingLen, endMethod, rmAbsPct / 100, maxAge))
+[b4, s4] = request.security(syminfo.tickerid, tf4, obEngine(swingLen, endMethod, rmAbsPct / 100, maxAge))
+[b5, s5] = request.security(syminfo.tickerid, tf5, obEngine(swingLen, endMethod, rmAbsPct / 100, maxAge))
+
+// ─── Helpers ────────────────────────────────────────────────────
+fmtTf(string tf) =>
+    int s = timeframe.in_seconds(tf)
+    s >= 2592000 ? "M" : s >= 604800 ? "W" : s >= 86400 ? "D" : s >= 3600 ? str.tostring(s / 3600) + "H" : str.tostring(s / 60) + "m"
+
+fmtPct(float x) =>
+    str.tostring(math.round(x * 100)) + "%"
+
+minNa(float a, float b) =>
+    na(a) ? b : na(b) ? a : math.min(a, b)
+
+maxNa(float a, float b) =>
+    na(a) ? b : na(b) ? a : math.max(a, b)
+
+collect(array<Zone> zs, array<OB> src, int side, string tfLbl) =>
+    if not na(src)
+        int act = 0
+        int brk = 0
+        for ob in src
+            if not ob.breaker
+                if act < keepPerTf
+                    zs.push(Zone.new(ob.top, ob.bottom, ob.startTime, side, ob.obVol, ob.deepest, ob.volIn, tfLbl, false, na))
+                    act += 1
+            else if showHist and brk < keepPerTf
+                zs.push(Zone.new(ob.top, ob.bottom, ob.startTime, side, ob.obVol, ob.deepest, ob.volIn, tfLbl, true, ob.breakTime))
+                brk += 1
+    zs.size()
+
+// Merge overlapping active zones of the same side (repeat until nothing overlaps)
+mergeZones(array<Zone> zs) =>
+    bool changed = true
+    while changed
+        changed := false
+        int n = zs.size()
+        if n >= 2
+            for i = 0 to n - 2
+                Zone a = zs.get(i)
+                if not a.breaker
+                    for j = i + 1 to n - 1
+                        Zone b = zs.get(j)
+                        if not b.breaker and a.side == b.side and a.bottom <= b.top and b.bottom <= a.top
+                            a.top       := math.max(a.top, b.top)
+                            a.bottom    := math.min(a.bottom, b.bottom)
+                            a.startTime := math.min(a.startTime, b.startTime)
+                            a.obVol     := math.max(a.obVol, b.obVol)      // max, not sum: same volume shows on every TF
+                            a.volIn     := math.max(a.volIn, b.volIn)
+                            a.deepest   := a.side == 1 ? minNa(a.deepest, b.deepest) : maxNa(a.deepest, b.deepest)
+                            if not str.contains(a.tfs, b.tfs)
+                                a.tfs := a.tfs + " & " + b.tfs
+                            zs.remove(j)
+                            changed := true
+                            break
+                if changed
+                    break
+    zs.size()
+
+var array<box>   drawn       = array.new<box>()
+var array<label> drawnLabels = array.new<label>()
+var array<line>  drawnLines  = array.new<line>()
+
+render(Zone z) =>
+    float h        = z.top - z.bottom
+    float absorbed = z.breaker ? 1.0 : (na(z.deepest) or h <= 0) ? 0.0 : z.side == 1 ? (z.top - z.deepest) / h : (z.deepest - z.bottom) / h
+    absorbed := math.max(0.0, math.min(1.0, absorbed))
+    float edge = z.side == 1 ? z.top - absorbed * h : z.bottom + absorbed * h
+    int   x2   = z.breaker ? z.breakTime : time + extendMs
+    color base = z.side == 1 ? bullCol : bearCol
+    color none = color.new(color.white, 100)
+    string txt = ""
+    if z.breaker
+        drawn.push(box.new(z.startTime, z.top, x2, z.bottom, xloc = xloc.bar_time, bgcolor = brokenCol, border_color = none))
+        txt := z.tfs + " OB · broken"
+    else
+        float rTop = z.side == 1 ? edge : z.top
+        float rBot = z.side == 1 ? z.bottom : edge
+        float aTop = z.side == 1 ? z.top : edge
+        float aBot = z.side == 1 ? edge : z.bottom
+        // LEFT part (still unfilled)
+        if absorbed < 1
+            drawn.push(box.new(z.startTime, rTop, x2, rBot, xloc = xloc.bar_time, bgcolor = base, border_color = none))
+        // ABSORBED part (already traded into)
+        if absorbed > 0
+            drawn.push(box.new(z.startTime, aTop, x2, aBot, xloc = xloc.bar_time, bgcolor = absorbedCol, border_color = none))
+            drawnLines.push(line.new(z.startTime, edge, x2, edge, xloc = xloc.bar_time, color = edgeCol, style = line.style_dashed, width = 1))
+        txt := z.tfs + (z.side == 1 ? " Bull OB" : " Bear OB") + " · " + str.tostring(z.obVol, format.volume)
+        txt += "\nAbsorbed " + fmtPct(absorbed) + " | Left " + fmtPct(1 - absorbed)
+        if showVolIn and z.obVol > 0
+            txt += "\nVol in zone " + str.tostring(z.volIn, format.volume) + " (" + str.tostring(z.volIn / z.obVol, "#.#") + "× OB)"
+    // outline
+    drawn.push(box.new(z.startTime, z.top, x2, z.bottom, xloc = xloc.bar_time, bgcolor = none, border_color = z.breaker ? none : color.new(base, 20), border_width = 1))
+    // info label just right of the zone, always readable however thin the zone is
+    drawnLabels.push(label.new(x2, (z.top + z.bottom) / 2, txt, xloc = xloc.bar_time, style = label.style_label_left, color = color.new(#131722, 15), textcolor = textCol, size = size.small, textalign = text.align_left))
+    absorbed
+
+// ─── Build, merge, draw (last bar only — that is all that's visible) ───
+bool enterBull = false
+bool enterBear = false
+
+if barstate.islast
+    for bx in drawn
+        bx.delete()
+    drawn.clear()
+    for lb in drawnLabels
+        lb.delete()
+    drawnLabels.clear()
+    for ln in drawnLines
+        ln.delete()
+    drawnLines.clear()
+
+    array<Zone> zs = array.new<Zone>()
+    if use1 and timeframe.in_seconds(tf1) >= chartSec
+        collect(zs, b1, 1, fmtTf(tf1))
+        collect(zs, s1, -1, fmtTf(tf1))
+    if use2 and timeframe.in_seconds(tf2) >= chartSec
+        collect(zs, b2, 1, fmtTf(tf2))
+        collect(zs, s2, -1, fmtTf(tf2))
+    if use3 and timeframe.in_seconds(tf3) >= chartSec
+        collect(zs, b3, 1, fmtTf(tf3))
+        collect(zs, s3, -1, fmtTf(tf3))
+    if use4 and timeframe.in_seconds(tf4) >= chartSec
+        collect(zs, b4, 1, fmtTf(tf4))
+        collect(zs, s4, -1, fmtTf(tf4))
+    if use5 and timeframe.in_seconds(tf5) >= chartSec
+        collect(zs, b5, 1, fmtTf(tf5))
+        collect(zs, s5, -1, fmtTf(tf5))
+
+    if mergeOn
+        mergeZones(zs)
+
+    for z in zs
+        float hz  = z.top - z.bottom
+        float abz = z.breaker or na(z.deepest) or hz <= 0 ? 0.0 : z.side == 1 ? (z.top - z.deepest) / hz : (z.deepest - z.bottom) / hz
+        if abz >= rmAbsPct / 100
+            continue
+        render(z)
+        if not z.breaker and low <= z.top and high >= z.bottom
+            if z.side == 1
+                enterBull := true
+            else
+                enterBear := true
+
+// ─── Alerts (real-time) ─────────────────────────────────────────
+alertcondition(enterBull, "Price in bullish OB", "MTF OB: price trading inside a bullish order block on {{ticker}} at {{close}}")
+alertcondition(enterBear, "Price in bearish OB", "MTF OB: price trading inside a bearish order block on {{ticker}} at {{close}}")
